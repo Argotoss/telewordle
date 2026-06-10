@@ -1,6 +1,6 @@
 # telewordle
 
-A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat plays together — with image or text boards, tournaments, duels, hard/super-hard difficulty, and a "creativity mode" that bans recently used words.
+A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat plays together — with sticker or text boards, tournaments, duels, hard/super-hard difficulty, and a "creativity mode" that bans recently used words.
 
 ## Quick start
 
@@ -32,7 +32,7 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
 ## Settings (`/settings`, per chat)
 
 - **Bare-word guessing** (default **off**) — when on, any message that is a valid 5-letter word counts as a guess. Unknown words get a "not in my dictionary" notice.
-- **Board style** (default **image**) — classic Wordle picture (board + letter keyboard), or pure text:
+- **Board style** (default **sticker**) — classic Wordle board + letter keyboard as a WebP sticker, or pure text:
   ```
   T R A C E
   🟨🟨🟨⬛🟨
@@ -70,7 +70,7 @@ Per user, per chat: games played/won, win rate, winning guesses, current/best st
 npm test                 # engine + game-logic test suite (vitest)
 npm run dev              # run with auto-reload
 npm run build            # type-check and compile to dist/
-npm run render:sample    # render a sample board to /tmp/telewordle-sample.png
+npm run render:sample    # render sample boards to /tmp/telewordle-sample.{png,webp}
 ```
 
 Stack: TypeScript, [grammY](https://grammy.dev) (long polling — no public URL needed), better-sqlite3, @napi-rs/canvas.

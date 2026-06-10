@@ -1,8 +1,8 @@
-// Renders a sample board to /tmp/telewordle-sample.png and prints the text-mode
-// equivalent, so the visual output can be checked without a Telegram token.
+// Renders sample boards to /tmp and prints the text-mode equivalent, so the
+// visual output can be checked without a Telegram token.
 import { writeFileSync } from 'node:fs';
 import { GameRow } from '../src/db.js';
-import { renderBoardImage } from '../src/render/image.js';
+import { renderBoardImage, renderBoardSticker } from '../src/render/image.js';
 import { textBoard } from '../src/render/text.js';
 
 const mk = (word: string, userId: number, userName: string) => ({ word, userId, userName, ts: 0 });
@@ -20,8 +20,11 @@ const game: GameRow = {
   duel_id: null,
 };
 
-const out = '/tmp/telewordle-sample.png';
-writeFileSync(out, renderBoardImage(game));
-console.log(`wrote ${out}`);
+const pngOut = '/tmp/telewordle-sample.png';
+const webpOut = '/tmp/telewordle-sample.webp';
+writeFileSync(pngOut, renderBoardImage(game));
+writeFileSync(webpOut, renderBoardSticker(game));
+console.log(`wrote ${pngOut}`);
+console.log(`wrote ${webpOut}`);
 console.log('--- text mode ---');
 console.log(textBoard(game));

@@ -1,4 +1,4 @@
-import { createCanvas } from '@napi-rs/canvas';
+import { createCanvas, type Canvas } from '@napi-rs/canvas';
 import { GameRow } from '../db.js';
 import { keyboardStatus, scoreGuess, TileStatus } from '../engine/score.js';
 import { MAX_GUESSES } from '../game/service.js';
@@ -25,8 +25,9 @@ const KEY_GAP = 6;
 const KEY_ROWS = ['QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'];
 
 const FONT = 'sans-serif';
+const STICKER_SIZE = 512;
 
-export function renderBoardImage(game: GameRow): Buffer {
+function renderBoardCanvas(game: GameRow, opts: { background?: boolean } = {}): Canvas {
   const boardW = BOARD_COLS * TILE + (BOARD_COLS - 1) * TILE_GAP;
   const boardH = MAX_GUESSES * TILE + (MAX_GUESSES - 1) * TILE_GAP;
   const kbW = KEY_ROWS[0].length * KEY_W + (KEY_ROWS[0].length - 1) * KEY_GAP;
@@ -36,8 +37,10 @@ export function renderBoardImage(game: GameRow): Buffer {
 
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = COLORS.bg;
-  ctx.fillRect(0, 0, width, height);
+  if (opts.background ?? true) {
+    ctx.fillStyle = COLORS.bg;
+    ctx.fillRect(0, 0, width, height);
+  }
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
@@ -84,7 +87,27 @@ export function renderBoardImage(game: GameRow): Buffer {
     }
   });
 
-  return canvas.toBuffer('image/png');
+  return canvas;
+}
+
+export function renderBoardImage(game: GameRow): Buffer {
+  return renderBoardCanvas(game).toBuffer('image/png');
+}
+
+export function renderBoardSticker(game: GameRow): Buffer {
+  const source = renderBoardCanvas(game, { background: false });
+  const sticker = createCanvas(STICKER_SIZE, STICKER_SIZE);
+  const ctx = sticker.getContext('2d');
+  const scale = Math.min(STICKER_SIZE / source.width, STICKER_SIZE / source.height);
+  const width = Math.round(source.width * scale);
+  const height = Math.round(source.height * scale);
+  const x = Math.round((STICKER_SIZE - width) / 2);
+  const y = Math.round((STICKER_SIZE - height) / 2);
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(source, x, y, width, height);
+
+  return sticker.toBuffer('image/webp', 100);
 }
 
 function roundRect(

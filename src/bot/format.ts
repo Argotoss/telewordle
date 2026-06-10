@@ -18,7 +18,7 @@ Commands
 /stats — your stats in this chat
 /tournament N — start an N-round turn-based tournament
 /challenge — duel a friend (same word, fewest guesses wins)
-/settings — bare-word guessing, image/text mode, difficulty, creativity mode
+/settings — bare-word guessing, sticker/text mode, difficulty, creativity mode
 /help — this message`;
 
 export const DIFFICULTY_LABEL: Record<Difficulty, string> = {
@@ -38,7 +38,7 @@ export function settingsText(s: ChatSettings): string {
   return `⚙️ Settings for this chat
 
 • Bare-word guessing: ${s.bareWord ? 'ON — any valid 5-letter word counts as a guess' : 'OFF — use /guess WORD'}
-• Board style: ${s.render === 'image' ? '🖼 image' : '🔤 text'}
+• Board style: ${s.render === 'image' ? '🧩 sticker' : '🔤 text'}
 • Difficulty: ${DIFFICULTY_LABEL[s.difficulty]}
 • Creativity mode: ${describeCreativity(s)}
 

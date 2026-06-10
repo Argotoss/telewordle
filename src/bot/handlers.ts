@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import { Bot, Context, InlineKeyboard, InputFile } from 'grammy';
 import { GameRow, TournamentRow } from '../db.js';
 import { GameService, MAX_GUESSES, UserRef, roundOrder } from '../game/service.js';
-import { renderBoardImage } from '../render/image.js';
+import { renderBoardSticker } from '../render/image.js';
 import { textBoard } from '../render/text.js';
 import {
   DIFFICULTY_LABEL,
@@ -27,7 +27,7 @@ function settingsKeyboard(svc: GameService, chatId: number): InlineKeyboard {
   return new InlineKeyboard()
     .text(`Bare-word guessing: ${s.bareWord ? 'ON ✅' : 'OFF'}`, 'set:bare')
     .row()
-    .text(`Board style: ${s.render === 'image' ? '🖼 image' : '🔤 text'}`, 'set:render')
+    .text(`Board style: ${s.render === 'image' ? '🧩 sticker' : '🔤 text'}`, 'set:render')
     .row()
     .text(`Difficulty: ${DIFFICULTY_LABEL[s.difficulty]}`, 'set:difficulty')
     .row()
@@ -55,8 +55,9 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
   async function sendBoard(ctx: Context, chatId: number, game: GameRow, caption: string): Promise<void> {
     const s = svc.settings(chatId);
     if (s.render === 'image') {
-      const buf = renderBoardImage(game);
-      await ctx.api.sendPhoto(chatId, new InputFile(buf, 'board.png'), { caption });
+      const buf = renderBoardSticker(game);
+      await ctx.api.sendMessage(chatId, caption);
+      await ctx.api.sendSticker(chatId, new InputFile(buf, 'board.webp'));
     } else {
       await ctx.api.sendMessage(chatId, `${caption}\n\n${textBoard(game)}`);
     }
