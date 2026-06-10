@@ -41,6 +41,7 @@ export function settingsText(s: ChatSettings): string {
 • Board style: ${s.render === 'image' ? '🖼 image' : '🔤 text'}
 • Difficulty: ${DIFFICULTY_LABEL[s.difficulty]}
 • Creativity mode: ${describeCreativity(s)}
+• Max failed attempts (tournaments): ${s.maxFails > 0 ? `${s.maxFails} per turn` : 'unlimited'}
 
 Difficulty: hard = every green/yellow hint must be used in later guesses; super hard = additionally, gray letters may not be played again.
 
@@ -48,6 +49,9 @@ Creativity mode bans recently used words (as guesses AND as answers).
 Configure it with:
   /settings creativity 30m   (time window: s/m/h/d)
   /settings creativity 15 words   (last N words)
+
+Max failed attempts: in tournaments, rejected guesses (unknown word, hard-mode or creativity violations) by the player at turn count as fails — hit the limit and the turn passes on. Configure with:
+  /settings fails 5   (or: /settings fails off)
 
 Note: bare-word guessing needs the bot to see all messages — disable privacy mode via @BotFather (/setprivacy) or make the bot a group admin.`;
 }

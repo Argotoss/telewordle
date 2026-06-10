@@ -17,6 +17,8 @@ export interface ChatSettings {
   bareWord: boolean;
   render: RenderMode;
   difficulty: Difficulty;
+  /** Tournaments: rejected guess attempts allowed per turn before it is forfeited. 0 = unlimited. */
+  maxFails: number;
   creativity: CreativitySettings;
 }
 
@@ -24,6 +26,7 @@ export const DEFAULT_SETTINGS: ChatSettings = {
   bareWord: false,
   render: 'image',
   difficulty: 'normal',
+  maxFails: 5,
   creativity: { enabled: true, mode: 'time', seconds: 3600, count: 20 },
 };
 
@@ -66,6 +69,7 @@ export interface TournamentRow {
   players: TournamentPlayer[];
   scores: Record<string, number>; // userId -> points
   turn_idx: number; // index into rotated order of the current round
+  fail_count: number; // rejected attempts by the current player this turn
   created_by: number;
 }
 
@@ -151,6 +155,7 @@ export function openDb(path: string): Database.Database {
       players TEXT NOT NULL DEFAULT '[]',
       scores TEXT NOT NULL DEFAULT '{}',
       turn_idx INTEGER NOT NULL DEFAULT 0,
+      fail_count INTEGER NOT NULL DEFAULT 0,
       created_by INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS duels (
@@ -188,6 +193,11 @@ export function openDb(path: string): Database.Database {
       PRIMARY KEY (chat_id, user_id)
     );
   `);
+  // migration for databases created before the max-fails feature
+  const cols = db.prepare('PRAGMA table_info(tournaments)').all() as { name: string }[];
+  if (!cols.some((c) => c.name === 'fail_count')) {
+    db.exec("ALTER TABLE tournaments ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0");
+  }
   return db;
 }
 
@@ -314,8 +324,8 @@ export function createTournament(
 
 export function updateTournament(db: Database.Database, t: TournamentRow): void {
   db.prepare(
-    `UPDATE tournaments SET current_round = ?, status = ?, players = ?, scores = ?, turn_idx = ? WHERE id = ?`
-  ).run(t.current_round, t.status, JSON.stringify(t.players), JSON.stringify(t.scores), t.turn_idx, t.id);
+    `UPDATE tournaments SET current_round = ?, status = ?, players = ?, scores = ?, turn_idx = ?, fail_count = ? WHERE id = ?`
+  ).run(t.current_round, t.status, JSON.stringify(t.players), JSON.stringify(t.scores), t.turn_idx, t.fail_count, t.id);
 }
 
 // ---------- duels ----------

@@ -67,21 +67,30 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const user = userRef(ctx);
     const out = svc.submitGuess(chatId, user, word);
 
+    const withFails = (msg: string, failInfo?: { count: number; max: number; forfeited: boolean; nextPlayer: { userName: string } | null }) => {
+      if (!failInfo) return msg;
+      msg += `\n(${failInfo.count}/${failInfo.max} failed attempts this turn)`;
+      if (failInfo.forfeited && failInfo.nextPlayer) {
+        msg += `\n🚷 Turn forfeited! Next up: ${failInfo.nextPlayer.userName}`;
+      }
+      return msg;
+    };
+
     switch (out.type) {
       case 'no_game':
         if (!opts.silentNoGame) await ctx.reply('No game running here. Send /play to start one!');
         return;
       case 'not_a_word':
-        await ctx.reply(`🤔 "${out.word.toUpperCase()}" is not in my dictionary.`);
+        await ctx.reply(withFails(`🤔 "${out.word.toUpperCase()}" is not in my dictionary.`, out.failInfo));
         return;
       case 'already_guessed':
-        await ctx.reply(`♻️ ${out.word.toUpperCase()} was already guessed this game.`);
+        await ctx.reply(withFails(`♻️ ${out.word.toUpperCase()} was already guessed this game.`, out.failInfo));
         return;
       case 'creativity_blocked':
-        await ctx.reply(`🚫 Creativity mode: ${out.word.toUpperCase()} was used recently here. Try something fresh!`);
+        await ctx.reply(withFails(`🚫 Creativity mode: ${out.word.toUpperCase()} was used recently here. Try something fresh!`, out.failInfo));
         return;
       case 'hard_mode_violation':
-        await ctx.reply(`${out.superHard ? '🔥 Super hard' : '😤 Hard'} mode: ${out.reason}.`);
+        await ctx.reply(withFails(`${out.superHard ? '🔥 Super hard' : '😤 Hard'} mode: ${out.reason}.`, out.failInfo));
         return;
       case 'not_your_turn':
         await ctx.reply(`⏳ Not so fast — it's ${out.currentPlayer.userName}'s turn.`);
@@ -220,8 +229,22 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const chatId = ctx.chat.id;
     const args = (ctx.match ?? '').trim();
     if (args) {
+      const fails = args.match(/^fails?\s+(\d+|off|unlimited)$/i);
+      if (fails) {
+        const s = svc.settings(chatId);
+        const v = fails[1].toLowerCase();
+        const n = v === 'off' || v === 'unlimited' ? 0 : parseInt(v, 10);
+        if (n < 0 || n > 100) return void (await ctx.reply('Pick a limit between 1 and 100, or "off".'));
+        s.maxFails = n;
+        svc.saveSettings(chatId, s);
+        return void (await ctx.reply(
+          n > 0
+            ? `✅ Tournaments: ${n} failed attempt${n > 1 ? 's' : ''} per turn, then the turn is forfeited.`
+            : '✅ Tournaments: unlimited failed attempts per turn.'
+        ));
+      }
       const m = args.match(/^creativity\s+(.+)$/i);
-      if (!m) return void (await ctx.reply('Usage: /settings creativity 30m  |  /settings creativity 15 words'));
+      if (!m) return void (await ctx.reply('Usage: /settings creativity 30m  |  /settings creativity 15 words  |  /settings fails 5'));
       const parsed = parseCreativityValue(m[1]);
       if (!parsed) return void (await ctx.reply('Could not parse that. Examples: 90s, 30m, 2h, 1d, 15 words'));
       const s = svc.settings(chatId);

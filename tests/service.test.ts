@@ -209,6 +209,56 @@ describe('tournaments', () => {
     expect(svc.statsFor(CHAT, A.id).tournaments_won).toBe(0);
   });
 
+  it('forfeits the turn after too many failed attempts (default 5, configurable)', () => {
+    expect(svc.settings(CHAT).maxFails).toBe(5);
+    const s = svc.settings(CHAT);
+    s.maxFails = 2;
+    svc.saveSettings(CHAT, s);
+
+    const t0 = svc.createTournament(CHAT, 1, A)!;
+    svc.joinTournament(t0.id, B);
+    const started = svc.startTournament(t0.id) as Exclude<ReturnType<typeof svc.startTournament>, 'too_few' | null>;
+    forceAnswer(started.game.id, 'water');
+
+    // out-of-turn rejections do NOT count as fails for anyone
+    expect(svc.submitGuess(CHAT, B, 'zzzzz').type).toBe('not_your_turn');
+
+    // A (at turn) spams nonsense
+    const f1 = svc.submitGuess(CHAT, A, 'zzzzz');
+    if (f1.type !== 'not_a_word') throw new Error('expected not_a_word');
+    expect(f1.failInfo).toEqual({ count: 1, max: 2, forfeited: false, nextPlayer: null });
+
+    const f2 = svc.submitGuess(CHAT, A, 'qqqqq');
+    if (f2.type !== 'not_a_word') throw new Error('expected not_a_word');
+    expect(f2.failInfo?.forfeited).toBe(true);
+    expect(f2.failInfo?.nextPlayer?.userId).toBe(B.id);
+
+    // turn has passed to B
+    expect(svc.submitGuess(CHAT, A, 'crane').type).toBe('not_your_turn');
+    expect(svc.submitGuess(CHAT, B, 'crane').type).toBe('accepted');
+
+    // fail counter is fresh for the next turn (A again)
+    const f3 = svc.submitGuess(CHAT, A, 'jjjjj');
+    if (f3.type !== 'not_a_word') throw new Error('expected not_a_word');
+    expect(f3.failInfo?.count).toBe(1);
+  });
+
+  it('maxFails 0 means unlimited', () => {
+    const s = svc.settings(CHAT);
+    s.maxFails = 0;
+    svc.saveSettings(CHAT, s);
+    const t0 = svc.createTournament(CHAT, 1, A)!;
+    svc.joinTournament(t0.id, B);
+    const started = svc.startTournament(t0.id) as Exclude<ReturnType<typeof svc.startTournament>, 'too_few' | null>;
+    forceAnswer(started.game.id, 'water');
+    for (let i = 0; i < 10; i++) {
+      const r = svc.submitGuess(CHAT, A, 'zzzzz');
+      if (r.type !== 'not_a_word') throw new Error('expected not_a_word');
+      expect(r.failInfo).toBeUndefined();
+    }
+    expect(svc.submitGuess(CHAT, A, 'crane').type).toBe('accepted');
+  });
+
   it('cancel: only the creator can', () => {
     const t = svc.createTournament(CHAT, 3, A)!;
     expect(svc.cancelTournament(CHAT, B.id)).toBe('not_allowed');

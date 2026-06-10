@@ -45,12 +45,20 @@ export function pointsForGuessNumber(n: number): number {
   return MAX_GUESSES + 1 - n; // guess #1 → 6 pts … guess #6 → 1 pt
 }
 
+/** Tournament anti-spam: rejected attempts this turn, and whether the turn was forfeited. */
+export interface FailInfo {
+  count: number;
+  max: number;
+  forfeited: boolean;
+  nextPlayer: TournamentPlayer | null;
+}
+
 export type GuessOutcome =
   | { type: 'no_game' }
-  | { type: 'not_a_word'; word: string }
-  | { type: 'creativity_blocked'; word: string }
-  | { type: 'hard_mode_violation'; word: string; reason: string; superHard: boolean }
-  | { type: 'already_guessed'; word: string }
+  | { type: 'not_a_word'; word: string; failInfo?: FailInfo }
+  | { type: 'creativity_blocked'; word: string; failInfo?: FailInfo }
+  | { type: 'hard_mode_violation'; word: string; reason: string; superHard: boolean; failInfo?: FailInfo }
+  | { type: 'already_guessed'; word: string; failInfo?: FailInfo }
   | { type: 'not_your_turn'; currentPlayer: TournamentPlayer }
   | {
       type: 'accepted';
@@ -122,25 +130,12 @@ export class GameService {
     const word = rawWord.trim().toLowerCase();
     const game = getActiveGame(this.db, chatId);
     if (!game) return { type: 'no_game' };
-    if (!isValidWord(word)) return { type: 'not_a_word', word };
-    if (game.guesses.some((g) => g.word === word)) return { type: 'already_guessed', word };
 
     const settings = getSettings(this.db, chatId);
     const isDuel = game.kind === 'duel';
 
-    // creativity mode (not for duels — both duelists must face the same word fairly)
-    if (!isDuel && word !== game.answer && recentWords(this.db, chatId, settings.creativity).has(word)) {
-      return { type: 'creativity_blocked', word };
-    }
-
-    // hard / super hard mode: all revealed hints must be used
-    if (settings.difficulty !== 'normal') {
-      const superHard = settings.difficulty === 'superhard';
-      const reason = hardModeViolation(game.answer, game.guesses.map((g) => g.word), word, superHard);
-      if (reason) return { type: 'hard_mode_violation', word, reason, superHard };
-    }
-
-    // tournament turn enforcement
+    // tournament turn enforcement comes first: rejected attempts by the
+    // player at turn count toward the max-fails limit
     let tournament: TournamentRow | null = null;
     if (game.kind === 'tournament' && game.tournament_id) {
       tournament = getTournament(this.db, game.tournament_id);
@@ -148,7 +143,26 @@ export class GameService {
         const order = roundOrder(tournament.players, tournament.current_round);
         const current = order[tournament.turn_idx % order.length];
         if (current.userId !== user.id) return { type: 'not_your_turn', currentPlayer: current };
+      } else {
+        tournament = null;
       }
+    }
+    const fail = <T extends Extract<GuessOutcome, { failInfo?: FailInfo }>>(outcome: T): T =>
+      this.countFailedAttempt(tournament, settings.maxFails, outcome);
+
+    if (!isValidWord(word)) return fail({ type: 'not_a_word', word });
+    if (game.guesses.some((g) => g.word === word)) return fail({ type: 'already_guessed', word });
+
+    // creativity mode (not for duels — both duelists must face the same word fairly)
+    if (!isDuel && word !== game.answer && recentWords(this.db, chatId, settings.creativity).has(word)) {
+      return fail({ type: 'creativity_blocked', word });
+    }
+
+    // hard / super hard mode: all revealed hints must be used
+    if (settings.difficulty !== 'normal') {
+      const superHard = settings.difficulty === 'superhard';
+      const reason = hardModeViolation(game.answer, game.guesses.map((g) => g.word), word, superHard);
+      if (reason) return fail({ type: 'hard_mode_violation', word, reason, superHard });
     }
 
     // accept the guess
@@ -239,6 +253,29 @@ export class GameService {
     return createGame(this.db, t.chat_id, answer, 'tournament', { tournamentId: t.id });
   }
 
+  /**
+   * A rejected guess by the player at turn counts as a failed attempt.
+   * Reaching the chat's max-fails limit forfeits the turn (maxFails 0 = unlimited).
+   */
+  private countFailedAttempt<T extends Extract<GuessOutcome, { failInfo?: FailInfo }>>(
+    t: TournamentRow | null,
+    maxFails: number,
+    outcome: T
+  ): T {
+    if (!t || maxFails <= 0) return outcome;
+    t.fail_count += 1;
+    const forfeited = t.fail_count >= maxFails;
+    let nextPlayer: TournamentPlayer | null = null;
+    if (forfeited) {
+      t.turn_idx = (t.turn_idx + 1) % t.players.length;
+      t.fail_count = 0;
+      nextPlayer = roundOrder(t.players, t.current_round)[t.turn_idx];
+    }
+    updateTournament(this.db, t);
+    outcome.failInfo = { count: forfeited ? maxFails : t.fail_count, max: maxFails, forfeited, nextPlayer };
+    return outcome;
+  }
+
   private advanceTournament(
     t: TournamentRow,
     user: UserRef,
@@ -257,6 +294,7 @@ export class GameService {
       pointsAwarded = pointsForGuessNumber(guessNumber);
       t.scores[String(user.id)] = (t.scores[String(user.id)] ?? 0) + pointsAwarded;
     }
+    t.fail_count = 0; // an accepted guess always hands over a fresh turn
 
     if (roundEnded) {
       if (t.current_round >= t.rounds) {
