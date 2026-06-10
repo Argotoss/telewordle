@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { Bot, Context, InlineKeyboard, InputFile } from 'grammy';
 import { GameRow, TournamentRow } from '../db.js';
 import { GameService, MAX_GUESSES, UserRef, roundOrder } from '../game/service.js';
+import { emojiPackFromStickers, escapeHtml, packNameCandidates, renderKeyboardList } from '../render/emoji-pack.js';
 import { renderBoardSticker } from '../render/image.js';
 import { textBoard } from '../render/text.js';
 import {
@@ -52,14 +53,34 @@ function lobbyKeyboard(t: TournamentRow): InlineKeyboard {
 export function registerHandlers(bot: Bot, db: Database.Database): void {
   const svc = new GameService(db);
 
+  async function sendStateMessage(
+    ctx: Context,
+    chatId: number,
+    game: GameRow,
+    caption: string,
+    boardText?: string
+  ): Promise<void> {
+    const s = svc.settings(chatId);
+    const keyboard = renderKeyboardList(game, s.emojiPack);
+    const textParts = [caption, boardText].filter((part): part is string => Boolean(part));
+
+    if (s.emojiPack) {
+      const escaped = textParts.map(escapeHtml);
+      await ctx.api.sendMessage(chatId, [...escaped, keyboard].join('\n\n'), { parse_mode: 'HTML' });
+      return;
+    }
+
+    await ctx.api.sendMessage(chatId, [...textParts, keyboard].join('\n\n'));
+  }
+
   async function sendBoard(ctx: Context, chatId: number, game: GameRow, caption: string): Promise<void> {
     const s = svc.settings(chatId);
     if (s.render === 'image') {
       const buf = renderBoardSticker(game);
-      await ctx.api.sendMessage(chatId, caption);
       await ctx.api.sendSticker(chatId, new InputFile(buf, 'board.webp'));
+      await sendStateMessage(ctx, chatId, game, caption);
     } else {
-      await ctx.api.sendMessage(chatId, `${caption}\n\n${textBoard(game)}`);
+      await sendStateMessage(ctx, chatId, game, caption, textBoard(game, { includeKeyboard: false }));
     }
   }
 
@@ -166,6 +187,34 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
 
   bot.command('help', (ctx) => ctx.reply(HELP_TEXT));
 
+  bot.command('usepack', async (ctx) => {
+    const requestedName = (ctx.match ?? '').trim();
+    if (!requestedName) {
+      return void (await ctx.reply('Usage: /usepack name'));
+    }
+
+    let lastError: unknown = null;
+    for (const packName of packNameCandidates(requestedName, ctx.me.username)) {
+      try {
+        const stickerSet = await ctx.api.getStickerSet(packName);
+        if (stickerSet.sticker_type !== 'custom_emoji') {
+          return void (await ctx.reply(`${packName} is not a custom emoji pack.`));
+        }
+
+        const s = svc.settings(ctx.chat.id);
+        s.emojiPack = emojiPackFromStickers(packName, stickerSet.stickers);
+        svc.saveSettings(ctx.chat.id, s);
+        await ctx.reply(`Using emoji pack for this chat: https://t.me/addemoji/${packName}`);
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    await ctx.reply(`Could not use emoji pack: ${message}`);
+  });
+
   bot.command('play', async (ctx) => {
     const chatId = ctx.chat.id;
     const t = svc.openTournament(chatId);
@@ -195,12 +244,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       if (t && t.status === 'joining') return void (await ctx.reply(lobbyText(t), { reply_markup: lobbyKeyboard(t) }));
       return void (await ctx.reply('No active game. Send /play to start one!'));
     }
-    let caption = `Current board — ${game.guesses.length}/${MAX_GUESSES} guesses used.`;
-    if (t && t.status === 'active') {
-      const current = roundOrder(t.players, t.current_round)[t.turn_idx % t.players.length];
-      caption += `\n\n🏆 Round ${t.current_round}/${t.rounds} — ${current.userName}'s turn.\nStandings:\n${standingsText(t)}`;
-    }
-    await sendBoard(ctx, chatId, game, caption);
+    await sendBoard(ctx, chatId, game, '');
   });
 
   bot.command('giveup', async (ctx) => {

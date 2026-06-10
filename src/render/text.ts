@@ -17,7 +17,7 @@ function letterRow(word: string): string {
 }
 
 /** Board for text mode: letters row + emoji row per guess, plus empty slots. */
-export function textBoard(game: GameRow, opts: { revealAnswer?: boolean } = {}): string {
+export function textBoard(game: GameRow, opts: { revealAnswer?: boolean; includeKeyboard?: boolean } = {}): string {
   const lines: string[] = [];
   for (const g of game.guesses) {
     lines.push(letterRow(g.word));
@@ -28,7 +28,7 @@ export function textBoard(game: GameRow, opts: { revealAnswer?: boolean } = {}):
     for (let i = 0; i < remaining; i++) lines.push('⬜⬜⬜⬜⬜'); // ⬜ empty rows
   }
   let out = lines.join('\n');
-  if (game.status !== 'active' || game.guesses.length > 0) {
+  if ((opts.includeKeyboard ?? true) && (game.status !== 'active' || game.guesses.length > 0)) {
     out += '\n\n' + keyboardLine(game);
   }
   if (opts.revealAnswer && game.status === 'lost') {
@@ -37,25 +37,22 @@ export function textBoard(game: GameRow, opts: { revealAnswer?: boolean } = {}):
   return out;
 }
 
-/** Compact letter-status summary, the text-mode equivalent of the on-screen keyboard. */
+/** Compact letter-status summary. Absent letters are hidden; unused letters stay gray. */
 export function keyboardLine(game: GameRow): string {
   const status = keyboardStatus(game.answer, game.guesses.map((g) => g.word));
   const greens: string[] = [];
   const yellows: string[] = [];
-  const grays: string[] = [];
   const unused: string[] = [];
   for (const c of 'abcdefghijklmnopqrstuvwxyz') {
     const s = status.get(c);
     const C = c.toUpperCase();
     if (s === 'correct') greens.push(C);
     else if (s === 'present') yellows.push(C);
-    else if (s === 'absent') grays.push(C);
     else unused.push(C);
   }
   const parts: string[] = [];
   if (greens.length) parts.push(`\u{1F7E9} ${greens.join('')}`);
   if (yellows.length) parts.push(`\u{1F7E8} ${yellows.join('')}`);
-  if (grays.length) parts.push(`⬛ ${grays.join('')}`);
   if (unused.length) parts.push(`◻️ ${unused.join('')}`);
   return parts.join('  ');
 }

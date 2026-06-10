@@ -26,19 +26,21 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
 | `/tournament N` | Start an N-round turn-based tournament |
 | `/tournament cancel` | Cancel the open tournament (creator only) |
 | `/challenge` | Duel: same word for two players, fewest guesses wins |
+| `/usepack NAME` | Use an existing custom emoji pack for this chat |
 | `/settings` | Per-chat settings (see below) |
 | `/help` | How to play |
 
 ## Settings (`/settings`, per chat)
 
 - **Bare-word guessing** (default **off**) — when on, any message that is a valid 5-letter word counts as a guess. Unknown words get a "not in my dictionary" notice.
-- **Board style** (default **sticker**) — classic Wordle board + letter keyboard as a WebP sticker, or pure text:
+- **Board style** (default **sticker**) — classic Wordle board as a WebP sticker, or pure text. The letter summary is sent in the message instead of inside the sticker, with absent letters hidden:
   ```
   T R A C E
   🟨🟨🟨⬛🟨
 
-  🟩 GL  🟨 N  ⬛ TESPU  ◻️ QWRYIO…
+  🟩GL  🟨N  ◻️QWRYIO…
   ```
+- **Emoji pack** — `/usepack NAME` selects an existing custom emoji pack for this chat. `NAME` can be the base name, full pack name, or `https://t.me/addemoji/...` link.
 - **Difficulty** (default **normal**)
   - **hard** — every revealed green/yellow hint must be used in all later guesses.
   - **super hard** — hard, plus gray letters can't be played again and known letter counts are enforced. You must use *all* information you have.

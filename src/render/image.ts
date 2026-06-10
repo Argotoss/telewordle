@@ -1,6 +1,6 @@
 import { createCanvas, type Canvas } from '@napi-rs/canvas';
 import { GameRow } from '../db.js';
-import { keyboardStatus, scoreGuess, TileStatus } from '../engine/score.js';
+import { scoreGuess, TileStatus } from '../engine/score.js';
 import { MAX_GUESSES } from '../game/service.js';
 
 // Classic Wordle palette
@@ -10,7 +10,6 @@ const COLORS = {
   present: '#b59f3b',
   absent: '#3a3a3c',
   emptyBorder: '#3a3a3c',
-  keyUnused: '#818384',
   text: '#ffffff',
 };
 
@@ -19,21 +18,14 @@ const TILE_GAP = 6;
 const BOARD_COLS = 5;
 const PAD = 24;
 
-const KEY_W = 40;
-const KEY_H = 54;
-const KEY_GAP = 6;
-const KEY_ROWS = ['QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'];
-
 const FONT = 'sans-serif';
 const STICKER_SIZE = 512;
 
 function renderBoardCanvas(game: GameRow, opts: { background?: boolean } = {}): Canvas {
   const boardW = BOARD_COLS * TILE + (BOARD_COLS - 1) * TILE_GAP;
   const boardH = MAX_GUESSES * TILE + (MAX_GUESSES - 1) * TILE_GAP;
-  const kbW = KEY_ROWS[0].length * KEY_W + (KEY_ROWS[0].length - 1) * KEY_GAP;
-  const kbH = KEY_ROWS.length * KEY_H + (KEY_ROWS.length - 1) * KEY_GAP;
-  const width = Math.max(boardW, kbW) + PAD * 2;
-  const height = PAD + boardH + 30 + kbH + PAD;
+  const width = boardW + PAD * 2;
+  const height = boardH + PAD * 2;
 
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');
@@ -66,26 +58,6 @@ function renderBoardCanvas(game: GameRow, opts: { background?: boolean } = {}): 
       }
     }
   }
-
-  // keyboard
-  const status = keyboardStatus(game.answer, game.guesses.map((g) => g.word));
-  const kbTop = PAD + boardH + 30;
-  KEY_ROWS.forEach((rowLetters, rowIdx) => {
-    const rowW = rowLetters.length * KEY_W + (rowLetters.length - 1) * KEY_GAP;
-    const startX = (width - rowW) / 2;
-    const y = kbTop + rowIdx * (KEY_H + KEY_GAP);
-    for (let i = 0; i < rowLetters.length; i++) {
-      const letter = rowLetters[i];
-      const s = status.get(letter.toLowerCase()) ?? 'unused';
-      const x = startX + i * (KEY_W + KEY_GAP);
-      ctx.fillStyle = s === 'unused' ? COLORS.keyUnused : COLORS[s];
-      roundRect(ctx, x, y, KEY_W, KEY_H, 5);
-      ctx.fill();
-      ctx.fillStyle = COLORS.text;
-      ctx.font = `bold 20px ${FONT}`;
-      ctx.fillText(letter, x + KEY_W / 2, y + KEY_H / 2 + 1);
-    }
-  });
 
   return canvas;
 }

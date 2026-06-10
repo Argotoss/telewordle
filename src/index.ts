@@ -22,6 +22,7 @@ const COMMANDS = [
   { command: 'stats', description: 'Your stats in this chat' },
   { command: 'tournament', description: 'Start a turn-based tournament' },
   { command: 'challenge', description: 'Duel a friend' },
+  { command: 'usepack', description: 'Use an existing custom emoji pack' },
   { command: 'settings', description: 'Chat settings' },
   { command: 'help', description: 'How to play' },
 ];

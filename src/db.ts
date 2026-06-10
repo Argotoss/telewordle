@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { isEmojiPackConfig, type EmojiPackConfig } from './render/emoji-pack.js';
 
 export type RenderMode = 'image' | 'text';
 
@@ -18,6 +19,7 @@ export interface ChatSettings {
   render: RenderMode;
   difficulty: Difficulty;
   creativity: CreativitySettings;
+  emojiPack: EmojiPackConfig | null;
 }
 
 export const DEFAULT_SETTINGS: ChatSettings = {
@@ -25,6 +27,7 @@ export const DEFAULT_SETTINGS: ChatSettings = {
   render: 'image',
   difficulty: 'normal',
   creativity: { enabled: true, mode: 'time', seconds: 3600, count: 20 },
+  emojiPack: null,
 };
 
 export interface GuessEntry {
@@ -204,6 +207,7 @@ export function getSettings(db: Database.Database, chatId: number): ChatSettings
     ...structuredClone(DEFAULT_SETTINGS),
     ...parsed,
     creativity: { ...structuredClone(DEFAULT_SETTINGS.creativity), ...(parsed.creativity ?? {}) },
+    emojiPack: isEmojiPackConfig(parsed.emojiPack) ? parsed.emojiPack : null,
   };
 }
 
