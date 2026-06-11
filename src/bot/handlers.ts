@@ -12,6 +12,8 @@ import {
 import { analyzeGame } from '../engine/analysis.js';
 import { LANGUAGES, looksLikeGuess } from '../engine/languages.js';
 import { GameService, MAX_GUESSES, UserRef, maxGuessesFor, roundOrder } from '../game/service.js';
+import { BOT_TOKEN } from '../config.js';
+import { renderVsCard, type VsRow } from '../render/vscard.js';
 import { fetchDefinition } from './define.js';
 import {
   emojiPackFromStickers,
@@ -600,6 +602,24 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     await ctx.reply(historyText(recentFinishedGames(db, ctx.chat.id)));
   });
 
+  /** Best-effort profile photo download for the VS card. */
+  async function fetchAvatar(api: Api, userId: number): Promise<Buffer | null> {
+    try {
+      const photos = await api.getUserProfilePhotos(userId, { limit: 1 });
+      const sizes = photos.photos[0];
+      if (!sizes?.length) return null;
+      const file = await api.getFile(sizes[Math.min(1, sizes.length - 1)].file_id);
+      if (!file.file_path) return null;
+      const res = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) return null;
+      return Buffer.from(await res.arrayBuffer());
+    } catch {
+      return null;
+    }
+  }
+
   bot.command('vs', async (ctx) => {
     const chatId = ctx.chat.id;
     const me = userRef(ctx);
@@ -633,7 +653,39 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       else if (winner.userId === me.id) record.aWins++;
       else record.bWins++;
     }
-    await ctx.reply(vsText(svc.statsFor(chatId, me.id), svc.statsFor(chatId, other.id), me.name, other.name, record));
+
+    const sa = svc.statsFor(chatId, me.id);
+    const sb = svc.statsFor(chatId, other.id);
+    const pct = (s: typeof sa) => (s.games_played ? Math.round((100 * s.games_won) / s.games_played) : null);
+    const num = (label: string, va: number, vb: number, fmt = (n: number) => String(n)): VsRow => ({
+      label,
+      a: fmt(va),
+      b: fmt(vb),
+      winner: va > vb ? 'a' : vb > va ? 'b' : 'tie',
+    });
+    const pa = pct(sa);
+    const pb = pct(sb);
+    const rows: VsRow[] = [
+      num('Won games', sa.games_won, sb.games_won),
+      num('Solves', sa.solves, sb.solves),
+      {
+        label: 'Win rate',
+        a: pa === null ? 'n/a' : `${pa}%`,
+        b: pb === null ? 'n/a' : `${pb}%`,
+        winner: (pa ?? -1) > (pb ?? -1) ? 'a' : (pb ?? -1) > (pa ?? -1) ? 'b' : 'tie',
+      },
+      num('Best streak', sa.best_streak, sb.best_streak),
+      num('Tournament pts', sa.tournament_points, sb.tournament_points),
+      num('Duels won', record.aWins, record.bWins),
+    ];
+
+    try {
+      const [avA, avB] = await Promise.all([fetchAvatar(ctx.api, me.id), fetchAvatar(ctx.api, other.id)]);
+      const card = await renderVsCard({ name: me.name, avatar: avA }, { name: other.name, avatar: avB }, rows);
+      await ctx.replyWithPhoto(new InputFile(card, 'vs.png'));
+    } catch {
+      await ctx.reply(vsText(sa, sb, me.name, other.name, record));
+    }
   });
 
   bot.command('define', async (ctx) => {
