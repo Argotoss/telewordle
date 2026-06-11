@@ -25,7 +25,7 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
 | `/hint` | Reveal one letter of the word — costs one of the six tries |
 | `/history` | Recent games: word, result, who solved it |
 | `/vs` | Head-to-head rivalry card (reply to someone or `/vs NAME`) |
-| `/define` | Dictionary definition of the last answer (English) |
+| `/define` | Dictionary definition of the last answer (English via dictionaryapi.dev, Russian via ru.wiktionary) |
 | `/board` | Show the current board (and tournament standings) |
 | `/giveup` | Abandon the game and reveal the word |
 | `/stats` | Your stats in this chat |

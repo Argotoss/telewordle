@@ -640,7 +640,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const [last] = recentFinishedGames(db, ctx.chat.id, 1);
     if (!last) return void (await ctx.reply('No finished games yet — definitions come after a game ends.'));
     const def = await fetchDefinition(last.answer, last.lang);
-    await ctx.reply(def ?? `📖 No definition found for ${last.answer.toUpperCase()} (English words only for now).`);
+    await ctx.reply(def ?? `📖 No definition found for ${last.answer.toUpperCase()}.`);
   });
 
   bot.command('daily', async (ctx) => {
