@@ -682,7 +682,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     try {
       const [avA, avB] = await Promise.all([fetchAvatar(ctx.api, me.id), fetchAvatar(ctx.api, other.id)]);
       const card = await renderVsCard({ name: me.name, avatar: avA }, { name: other.name, avatar: avB }, rows);
-      await ctx.replyWithPhoto(new InputFile(card, 'vs.png'));
+      await ctx.replyWithSticker(new InputFile(card, 'vs.webp'));
     } catch {
       await ctx.reply(vsText(sa, sb, me.name, other.name, record));
     }

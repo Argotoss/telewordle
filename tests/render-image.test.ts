@@ -23,14 +23,14 @@ function expectWebp(buffer: Buffer): void {
 }
 
 describe('vs card', () => {
-  it('renders a PNG with initials fallback when avatars are missing', async () => {
+  it('renders a 512px WebP sticker with initials fallback when avatars are missing', async () => {
     const { renderVsCard } = await import('../src/render/vscard.js');
-    const png = await renderVsCard({ name: 'Alice', avatar: null }, { name: 'Bob Smith', avatar: null }, [
+    const webp = await renderVsCard({ name: 'Alice', avatar: null }, { name: 'Bob Smith', avatar: null }, [
       { label: 'Won games', a: '2', b: '0', winner: 'a' },
       { label: 'Win rate', a: 'n/a', b: 'n/a', winner: 'tie' },
     ]);
-    expect(png.subarray(1, 4).toString('ascii')).toBe('PNG');
-    expect(png.length).toBeGreaterThan(5000);
+    expectWebp(webp);
+    expect(webp.length).toBeGreaterThan(2000);
   });
 });
 

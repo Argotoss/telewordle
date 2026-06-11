@@ -13,17 +13,18 @@ export interface VsRow {
   winner: 'a' | 'b' | 'tie';
 }
 
-const W = 520;
+// Rendered as a 512x512 transparent WebP and sent as a sticker — it shows up
+// large and borderless in chat instead of a framed compressed photo.
+const W = 512;
+const H = 512;
 const PAD = 28;
-const AVATAR = 104;
+const AVATAR = 84;
 const RING = 4;
-const ROW_H = 56;
-const ROW_GAP = 14;
-const SIDE_PILL_W = 124;
-const RADIUS = 14;
+const SIDE_PILL_W = 132;
+const ROW_GAP = 10;
+const RADIUS = 13;
 
 const C = {
-  bg: '#121213',
   pill: '#2c2c2e',
   pillCenter: '#232325',
   win: '#538d4e',
@@ -36,59 +37,65 @@ const C = {
 
 const FONT = 'sans-serif';
 
-/** Pretty head-to-head card: avatars + VS + stat pills, leader highlighted green. */
+/** Pretty head-to-head sticker: avatars + VS + stat pills, leader highlighted green. */
 export async function renderVsCard(a: VsPlayer, b: VsPlayer, rows: VsRow[]): Promise<Buffer> {
-  const headerH = AVATAR + 38; // avatar + name line
-  const rowsH = rows.length * ROW_H + (rows.length - 1) * ROW_GAP;
-  const height = PAD + headerH + 26 + rowsH + PAD;
-
-  const canvas = createCanvas(W, height);
+  const canvas = createCanvas(W, H);
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = C.bg;
-  ctx.fillRect(0, 0, W, height);
   ctx.textBaseline = 'middle';
 
   // --- header: avatar A · VS · avatar B, names underneath ---
   const colAx = PAD + SIDE_PILL_W / 2; // center avatars over the value pills
   const colBx = W - PAD - SIDE_PILL_W / 2;
-  await drawAvatar(ctx, a, colAx, PAD + AVATAR / 2, C.ringA);
-  await drawAvatar(ctx, b, colBx, PAD + AVATAR / 2, C.ringB);
+  const avatarCy = 20 + AVATAR / 2;
+  await drawAvatar(ctx, a, colAx, avatarCy, C.ringA);
+  await drawAvatar(ctx, b, colBx, avatarCy, C.ringB);
 
+  // VS and names sit on small dark badges: the sticker floats on the chat
+  // background, which can be light — bare light text would disappear there.
   ctx.textAlign = 'center';
+  pill(ctx, W / 2 - 36, avatarCy - 22, 72, 44, C.pillCenter);
   ctx.fillStyle = C.text;
-  ctx.font = `bold 34px ${FONT}`;
-  ctx.fillText('VS', W / 2, PAD + AVATAR / 2);
+  ctx.font = `bold 28px ${FONT}`;
+  ctx.fillText('VS', W / 2, avatarCy + 1);
 
-  ctx.fillStyle = C.name;
-  drawFitted(ctx, firstName(a.name), colAx, PAD + AVATAR + 22, SIDE_PILL_W + 30, 20);
-  drawFitted(ctx, firstName(b.name), colBx, PAD + AVATAR + 22, SIDE_PILL_W + 30, 20);
-
-  // --- stat rows ---
-  const centerW = W - 2 * PAD - 2 * SIDE_PILL_W - 2 * ROW_GAP;
-  const centerX = PAD + SIDE_PILL_W + ROW_GAP;
-  let y = PAD + headerH + 26;
-  for (const row of rows) {
-    pill(ctx, PAD, y, SIDE_PILL_W, ROW_H, row.winner === 'a' ? C.win : C.pill);
-    pill(ctx, centerX, y, centerW, ROW_H, C.pillCenter);
-    pill(ctx, W - PAD - SIDE_PILL_W, y, SIDE_PILL_W, ROW_H, row.winner === 'b' ? C.win : C.pill);
-
-    const cy = y + ROW_H / 2 + 1;
-    ctx.fillStyle = C.text;
-    ctx.font = `bold 22px ${FONT}`;
-    drawFitted(ctx, row.a, PAD + SIDE_PILL_W / 2, cy, SIDE_PILL_W - 20, 22, true);
-    drawFitted(ctx, row.b, W - PAD - SIDE_PILL_W / 2, cy, SIDE_PILL_W - 20, 22, true);
-    ctx.fillStyle = C.label;
-    drawFitted(ctx, row.label, W / 2, cy, centerW - 24, 20);
-
-    y += ROW_H + ROW_GAP;
+  const nameCy = 20 + AVATAR + 17;
+  for (const [name, cx] of [
+    [firstName(a.name), colAx],
+    [firstName(b.name), colBx],
+  ] as const) {
+    ctx.font = `16px ${FONT}`;
+    const w = Math.min(SIDE_PILL_W + 16, Math.ceil(ctx.measureText(name).width) + 24);
+    pill(ctx, cx - w / 2, nameCy - 13, w, 26, C.pillCenter);
+    ctx.fillStyle = C.name;
+    drawFitted(ctx, name, cx, nameCy + 1, w - 16, 16);
   }
 
-  return canvas.toBuffer('image/png');
+  // --- stat rows, sized to fill the remaining square exactly ---
+  const top = 20 + AVATAR + 34;
+  const rowH = Math.floor((H - top - 18 - (rows.length - 1) * ROW_GAP) / Math.max(1, rows.length));
+  const centerW = W - 2 * PAD - 2 * SIDE_PILL_W - 2 * 12;
+  const centerX = PAD + SIDE_PILL_W + 12;
+  let y = top;
+  for (const row of rows) {
+    pill(ctx, PAD, y, SIDE_PILL_W, rowH, row.winner === 'a' ? C.win : C.pill);
+    pill(ctx, centerX, y, centerW, rowH, C.pillCenter);
+    pill(ctx, W - PAD - SIDE_PILL_W, y, SIDE_PILL_W, rowH, row.winner === 'b' ? C.win : C.pill);
+
+    const cy = y + rowH / 2 + 1;
+    ctx.fillStyle = C.text;
+    drawFitted(ctx, row.a, PAD + SIDE_PILL_W / 2, cy, SIDE_PILL_W - 20, 21, true);
+    drawFitted(ctx, row.b, W - PAD - SIDE_PILL_W / 2, cy, SIDE_PILL_W - 20, 21, true);
+    ctx.fillStyle = C.label;
+    drawFitted(ctx, row.label, W / 2, cy, centerW - 20, 18);
+
+    y += rowH + ROW_GAP;
+  }
+
+  return canvas.toBuffer('image/webp', 100);
 }
 
 async function drawAvatar(ctx: SKRSContext2D, p: VsPlayer, cx: number, cy: number, ring: string): Promise<void> {
   const r = AVATAR / 2;
-  // ring
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.strokeStyle = ring;
@@ -116,7 +123,7 @@ async function drawAvatar(ctx: SKRSContext2D, p: VsPlayer, cx: number, cy: numbe
   ctx.fill();
   ctx.fillStyle = C.text;
   ctx.textAlign = 'center';
-  ctx.font = `bold 38px ${FONT}`;
+  ctx.font = `bold 32px ${FONT}`;
   ctx.fillText(initials(p.name), cx, cy + 2);
 }
 
