@@ -83,7 +83,14 @@ describe('basic game flow', () => {
 });
 
 describe('creativity mode', () => {
-  it('blocks recently used words (time mode, default on)', () => {
+  it('blocks recently used words (time mode)', () => {
+    const s = svc.settings(CHAT);
+    s.creativity.enabled = true;
+    s.creativity.configured = true;
+    s.creativity.mode = 'time';
+    s.creativity.seconds = 3600;
+    svc.saveSettings(CHAT, s);
+
     const g1 = svc.startGame(CHAT)!;
     const [w1] = wrongWords(g1.answer, 1);
     svc.submitGuess(CHAT, A, w1);
@@ -92,14 +99,16 @@ describe('creativity mode', () => {
     svc.startGame(CHAT);
     expect(svc.submitGuess(CHAT, A, w1).type).toBe('creativity_blocked');
 
-    const s = svc.settings(CHAT);
-    s.creativity.enabled = false;
-    svc.saveSettings(CHAT, s);
+    const disabled = svc.settings(CHAT);
+    disabled.creativity.enabled = false;
+    svc.saveSettings(CHAT, disabled);
     expect(svc.submitGuess(CHAT, A, w1).type).toBe('accepted');
   });
 
   it('count mode only bans the last N words', () => {
     const s = svc.settings(CHAT);
+    s.creativity.enabled = true;
+    s.creativity.configured = true;
     s.creativity.mode = 'count';
     s.creativity.count = 1;
     svc.saveSettings(CHAT, s);
@@ -181,6 +190,7 @@ describe('tournaments', () => {
 
     // round 1, order A → B
     expect(svc.submitGuess(CHAT, B, 'crane').type).toBe('not_your_turn');
+    expect(svc.submitGuess(CHAT, B, 'xxxxx').type).toBe('not_your_turn');
     expect(svc.submitGuess(CHAT, A, 'crane').type).toBe('accepted');
     expect(svc.submitGuess(CHAT, A, 'trace').type).toBe('not_your_turn');
 
@@ -207,6 +217,26 @@ describe('tournaments', () => {
     expect(sb.tournaments_won).toBe(1);
     expect(sb.tournament_points).toBe(11);
     expect(svc.statsFor(CHAT, A.id).tournaments_won).toBe(0);
+  });
+
+  it('starts unspecified-round tournament with one round per joined player', () => {
+    const t0 = svc.createTournament(CHAT, 0, A)!;
+    svc.joinTournament(t0.id, B);
+    svc.joinTournament(t0.id, C);
+
+    const started = svc.startTournament(t0.id);
+    expect(started).not.toBe('too_few');
+    expect((started as Exclude<typeof started, 'too_few' | null>).t.rounds).toBe(3);
+  });
+
+  it('lets players quit an open tournament', () => {
+    const t0 = svc.createTournament(CHAT, 0, A)!;
+    svc.joinTournament(t0.id, B);
+
+    const res = svc.quitTournament(t0.id, B.id);
+    expect(res).not.toBe('not_in');
+    expect((res as Exclude<typeof res, 'closed' | 'not_in' | null>).players.map((p) => p.userId)).toEqual([A.id]);
+    expect(svc.quitTournament(t0.id, B.id)).toBe('not_in');
   });
 
   it('cancel: only the creator can', () => {

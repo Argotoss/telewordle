@@ -1,26 +1,19 @@
 import { ChatSettings, Difficulty, StatsRow, TournamentRow } from '../db.js';
+import type { HardModeViolation } from '../engine/hardmode.js';
+import { scoreGuess, type TileStatus } from '../engine/score.js';
 import { roundOrder } from '../game/service.js';
+import { formatTileLetter, type EmojiPackConfig, type TileColor } from '../render/emoji-pack.js';
 
-export const HELP_TEXT = `🟩 Wordle Bot — How to Play
+export const HELP_TEXT = `<tg-emoji emoji-id="5282832726385268445">🔠</tg-emoji> Wordle
 
-/play starts a game with a random 5-letter word.
-Guess it in 6 tries — everyone in the chat plays together!
+/play · start a new game
+/tournament [N] · start a tournament
+/w [WORD] · guess a word
+/board · see current game board
 
-🟩 Green  — right letter, right spot
-🟨 Yellow — right letter, wrong spot
-⬛ Gray   — letter not in the word
+<tg-emoji emoji-id="5879813604068298387">❗</tg-emoji> See /settings for cool modes and preferences!
 
-Commands
-/play — start a new game
-/guess WORD — submit a guess
-/board — show the current board
-/giveup — end the game and reveal the word
-/stats — your stats in this chat
-/tournament N — start an N-round turn-based tournament
-/challenge — duel a friend (same word, fewest guesses wins)
-/usepack NAME — use an existing custom emoji pack in this chat
-/settings — bare-word guessing, sticker/text mode, difficulty, creativity mode
-/help — this message`;
+<tg-emoji emoji-id="5884343982816759327">↗️</tg-emoji> <a href="https://github.com/ExposedCat/telewordle">Source Code</a>`;
 
 export const DIFFICULTY_LABEL: Record<Difficulty, string> = {
   normal: '😎 normal',
@@ -28,7 +21,16 @@ export const DIFFICULTY_LABEL: Record<Difficulty, string> = {
   superhard: '🔥 super hard',
 };
 
+const TICK = '<tg-emoji emoji-id="5825794181183836432">✅</tg-emoji>';
+const FORBIDDEN = '<tg-emoji emoji-id="5872829476143894491">🚫</tg-emoji>';
+const ALREADY_GUESSED = '<tg-emoji emoji-id="5845943483382110702">♻️</tg-emoji>';
+const A_YELLOW = '<tg-emoji emoji-id="5280718893806034581">🔠</tg-emoji>';
+const A_GREEN = '<tg-emoji emoji-id="5282832726385268445">🔠</tg-emoji>';
+const A_DARK = '<tg-emoji emoji-id="5282737683053980256">🔠</tg-emoji>';
+const GAME_OVER = '<tg-emoji emoji-id="5927054181285237634">🏳️</tg-emoji>';
+
 export function describeCreativity(s: ChatSettings): string {
+  if (!s.creativity.configured) return 'off — set with /creativity 30m or /creativity 15w';
   if (!s.creativity.enabled) return 'off';
   return s.creativity.mode === 'time'
     ? `on — words from the last ${humanDuration(s.creativity.seconds)} are banned`
@@ -36,22 +38,83 @@ export function describeCreativity(s: ChatSettings): string {
 }
 
 export function settingsText(s: ChatSettings): string {
-  return `⚙️ Settings for this chat
+  return `Mode /mode_help
+/normal · normal mode${tick(s.difficulty === 'normal')}
+/hard · hard mode${tick(s.difficulty === 'hard')}
+/superhard · super hard mode${tick(s.difficulty === 'superhard')}
 
-• Bare-word guessing: ${s.bareWord ? 'ON — any valid 5-letter word counts as a guess' : 'OFF — use /guess WORD'}
-• Board style: ${s.render === 'image' ? '🧩 sticker' : '🔤 text'}
-• Emoji pack: ${s.emojiPack ? s.emojiPack.name : 'none'}
-• Difficulty: ${DIFFICULTY_LABEL[s.difficulty]}
-• Creativity mode: ${describeCreativity(s)}
+Creativity /creativity_help
+/creativity · toggle creativity ${toggleIcon(s.creativity.enabled)}
+/creativity 30m · time frame${tick(s.creativity.configured && s.creativity.mode === 'time')}
+/creativity 15w · word frame${tick(s.creativity.configured && s.creativity.mode === 'count')}
 
-Difficulty: hard = every green/yellow hint must be used in later guesses; super hard = additionally, gray letters may not be played again.
+Misc
+/auto · guess without /w ${toggleIcon(s.bareWord)}
+/usepack NAME · custom emoji pack ${toggleIcon(s.emojiPack !== null)}`;
+}
 
-Creativity mode bans recently used words (as guesses AND as answers).
-Configure it with:
-  /settings creativity 30m   (time window: s/m/h/d)
-  /settings creativity 15 words   (last N words)
+export function modeHelpText(s: ChatSettings): string {
+  return `Normal /normal${tick(s.difficulty === 'normal')}
+Classic Wordle experience.
 
-Note: bare-word guessing needs the bot to see all messages — disable privacy mode via @BotFather (/setprivacy) or make the bot a group admin.`;
+Hard /hard${tick(s.difficulty === 'hard')}
+Each guess must use ${A_YELLOW} yellow and ${A_GREEN} green hints from previous guesses.
+
+Super-hard /superhard${tick(s.difficulty === 'superhard')}
+Hard, but ${A_DARK} dark hints cannot be used.`;
+}
+
+export function hardModeViolationText(
+  violation: HardModeViolation,
+  superHard: boolean,
+  emojiPack: EmojiPackConfig | null
+): string {
+  const mode = superHard ? 'Super-hard' : 'Hard';
+  const required = violation.required
+    .map((hint) => formatTileLetter(hint.letter, hint.color, emojiPack))
+    .join(' ');
+  const forbidden = violation.forbidden.map((letter) => formatTileLetter(letter, 'dark-gray', emojiPack)).join(' ');
+
+  if (required && forbidden) return `${mode}: you must use ${required}.\nYou cannot use ${forbidden}`;
+  if (required) return `${mode}: you must use ${required}`;
+  return `${mode}: you cannot use ${forbidden}`;
+}
+
+export function alreadyGuessedText(word: string, answer: string, emojiPack: EmojiPackConfig | null): string {
+  const tiles = scoreGuess(answer, word)
+    .map((status, index) => formatTileLetter(word[index], tileStatusColor(status), emojiPack))
+    .join(' ');
+
+  return [emojiPack ? ALREADY_GUESSED : null, `${tiles} was already guessed`].filter(Boolean).join(' ');
+}
+
+export function giveUpText(answer: string): string {
+  return `${GAME_OVER} Game Over! The word was ${answer.toUpperCase()}.`;
+}
+
+export function creativityHelpText(s: ChatSettings): string {
+  return `Toggle /creativity ${toggleIcon(s.creativity.enabled)}
+Turns creativity on or off using the saved frame.
+
+Time frame /creativity 30m${tick(s.creativity.configured && s.creativity.mode === 'time')}
+Bans words used within a time window. Supports s, m, h, d.
+
+Word frame /creativity 15w${tick(s.creativity.configured && s.creativity.mode === 'count')}
+Bans the last N used words.`;
+}
+
+function tick(enabled: boolean): string {
+  return enabled ? ` ${TICK}` : '';
+}
+
+function toggleIcon(enabled: boolean): string {
+  return enabled ? TICK : FORBIDDEN;
+}
+
+function tileStatusColor(status: TileStatus): TileColor {
+  if (status === 'correct') return 'green';
+  if (status === 'present') return 'yellow';
+  return 'dark-gray';
 }
 
 export function humanDuration(seconds: number): string {
@@ -61,7 +124,7 @@ export function humanDuration(seconds: number): string {
   return `${seconds}s`;
 }
 
-/** Parse "30m", "2h", "90s", "1d" → seconds; or "15 words" → word count. */
+/** Parse "30m", "2h", "90s", "1d" → seconds; or "15w" / "15 words" → word count. */
 export function parseCreativityValue(input: string): { seconds: number } | { count: number } | null {
   const trimmed = input.trim().toLowerCase();
   const words = trimmed.match(/^(\d+)\s*(words?|w)$/);

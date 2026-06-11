@@ -24,7 +24,7 @@ import {
   updateGame,
   updateTournament,
 } from '../db.js';
-import { hardModeViolation } from '../engine/hardmode.js';
+import { hardModeViolation, type HardModeViolation } from '../engine/hardmode.js';
 import { scoreGuess, TileStatus } from '../engine/score.js';
 import { isValidWord, pickAnswer } from '../engine/words.js';
 
@@ -33,6 +33,8 @@ export const MAX_GUESSES = 6;
 export interface UserRef {
   id: number;
   name: string;
+  username?: string;
+  firstName?: string;
 }
 
 /** Turn order for a given 1-based round: players rotated left by (round - 1). */
@@ -49,7 +51,7 @@ export type GuessOutcome =
   | { type: 'no_game' }
   | { type: 'not_a_word'; word: string }
   | { type: 'creativity_blocked'; word: string }
-  | { type: 'hard_mode_violation'; word: string; reason: string; superHard: boolean }
+  | { type: 'hard_mode_violation'; word: string; violation: HardModeViolation; superHard: boolean }
   | { type: 'already_guessed'; word: string }
   | { type: 'not_your_turn'; currentPlayer: TournamentPlayer }
   | {
@@ -122,6 +124,19 @@ export class GameService {
     const word = rawWord.trim().toLowerCase();
     const game = getActiveGame(this.db, chatId);
     if (!game) return { type: 'no_game' };
+
+    // Tournament turn enforcement happens before word validation so out-of-turn
+    // players do not learn anything from dictionary or rule checks.
+    let tournament: TournamentRow | null = null;
+    if (game.kind === 'tournament' && game.tournament_id) {
+      tournament = getTournament(this.db, game.tournament_id);
+      if (tournament && tournament.status === 'active') {
+        const order = roundOrder(tournament.players, tournament.current_round);
+        const current = order[tournament.turn_idx % order.length];
+        if (current.userId !== user.id) return { type: 'not_your_turn', currentPlayer: current };
+      }
+    }
+
     if (!isValidWord(word)) return { type: 'not_a_word', word };
     if (game.guesses.some((g) => g.word === word)) return { type: 'already_guessed', word };
 
@@ -136,19 +151,8 @@ export class GameService {
     // hard / super hard mode: all revealed hints must be used
     if (settings.difficulty !== 'normal') {
       const superHard = settings.difficulty === 'superhard';
-      const reason = hardModeViolation(game.answer, game.guesses.map((g) => g.word), word, superHard);
-      if (reason) return { type: 'hard_mode_violation', word, reason, superHard };
-    }
-
-    // tournament turn enforcement
-    let tournament: TournamentRow | null = null;
-    if (game.kind === 'tournament' && game.tournament_id) {
-      tournament = getTournament(this.db, game.tournament_id);
-      if (tournament && tournament.status === 'active') {
-        const order = roundOrder(tournament.players, tournament.current_round);
-        const current = order[tournament.turn_idx % order.length];
-        if (current.userId !== user.id) return { type: 'not_your_turn', currentPlayer: current };
-      }
+      const violation = hardModeViolation(game.answer, game.guesses.map((g) => g.word), word, superHard);
+      if (violation) return { type: 'hard_mode_violation', word, violation, superHard };
     }
 
     // accept the guess
@@ -188,7 +192,7 @@ export class GameService {
   createTournament(chatId: number, rounds: number, creator: UserRef): TournamentRow | null {
     if (getOpenTournament(this.db, chatId) || getActiveGame(this.db, chatId)) return null;
     const t = createTournament(this.db, chatId, rounds, creator.id);
-    t.players = [{ userId: creator.id, userName: creator.name }];
+    t.players = [{ userId: creator.id, userName: creator.name, username: creator.username, firstName: creator.firstName ?? creator.name }];
     updateTournament(this.db, t);
     return getTournament(this.db, t.id);
   }
@@ -198,7 +202,17 @@ export class GameService {
     if (!t) return null;
     if (t.status !== 'joining') return 'closed';
     if (t.players.some((p) => p.userId === user.id)) return 'already_in';
-    t.players.push({ userId: user.id, userName: user.name });
+    t.players.push({ userId: user.id, userName: user.name, username: user.username, firstName: user.firstName ?? user.name });
+    updateTournament(this.db, t);
+    return getTournament(this.db, t.id);
+  }
+
+  quitTournament(tournamentId: number, userId: number): TournamentRow | 'closed' | 'not_in' | null {
+    const t = getTournament(this.db, tournamentId);
+    if (!t) return null;
+    if (t.status !== 'joining') return 'closed';
+    if (!t.players.some((p) => p.userId === userId)) return 'not_in';
+    t.players = t.players.filter((p) => p.userId !== userId);
     updateTournament(this.db, t);
     return getTournament(this.db, t.id);
   }
@@ -207,7 +221,8 @@ export class GameService {
   startTournament(tournamentId: number): { t: TournamentRow; game: GameRow; firstPlayer: TournamentPlayer } | 'too_few' | null {
     const t = getTournament(this.db, tournamentId);
     if (!t || t.status !== 'joining') return null;
-    if (t.players.length < 2) return 'too_few';
+    if (t.players.length < 1) return 'too_few';
+    if (t.rounds < 1) t.rounds = t.players.length;
     t.status = 'active';
     t.current_round = 1;
     t.turn_idx = 0;

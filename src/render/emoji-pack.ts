@@ -91,14 +91,19 @@ export function escapeHtml(text: string): string {
 }
 
 function formatKeyboardLetter(letter: string, status: Exclude<KeyStatus, 'absent'>, emojiPack: EmojiPackConfig | null): string {
+  return formatTileLetter(letter, keyboardColor(status), emojiPack);
+}
+
+export function formatTileLetter(letter: string, color: TileColor, emojiPack: EmojiPackConfig | null): string {
   if (emojiPack) {
-    const id = emojiPack.tiles[tileKey(letter, keyboardColor(status))];
+    const id = emojiPack.tiles[tileKey(letter, color)];
     return `<tg-emoji emoji-id="${id}">${FALLBACK_EMOJI}</tg-emoji>`;
   }
 
   const upper = letter.toUpperCase();
-  if (status === 'correct') return `🟩${upper}`;
-  if (status === 'present') return `🟨${upper}`;
+  if (color === 'green') return `🟩${upper}`;
+  if (color === 'yellow') return `🟨${upper}`;
+  if (color === 'dark-gray') return `⬛${upper}`;
   return `◻️${upper}`;
 }
 

@@ -16,13 +16,20 @@ bot.catch((err) => {
 
 const COMMANDS = [
   { command: 'play', description: 'Start a new game' },
-  { command: 'guess', description: 'Guess a 5-letter word' },
+  { command: 'w', description: 'Guess a 5-letter word' },
+  { command: 'auto', description: 'Toggle bare-word guessing' },
   { command: 'board', description: 'Show the current board' },
   { command: 'giveup', description: 'End the game and reveal the word' },
   { command: 'stats', description: 'Your stats in this chat' },
   { command: 'tournament', description: 'Start a turn-based tournament' },
   { command: 'challenge', description: 'Duel a friend' },
   { command: 'usepack', description: 'Use an existing custom emoji pack' },
+  { command: 'creativity', description: 'Toggle or configure recent-word bans' },
+  { command: 'normal', description: 'Set normal mode' },
+  { command: 'hard', description: 'Set hard mode' },
+  { command: 'superhard', description: 'Set super hard mode' },
+  { command: 'mode_help', description: 'Mode details' },
+  { command: 'creativity_help', description: 'Creativity details' },
   { command: 'settings', description: 'Chat settings' },
   { command: 'help', description: 'How to play' },
 ];

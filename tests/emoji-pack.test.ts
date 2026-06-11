@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GameRow } from '../src/db.js';
-import { EmojiPackConfig, orderedTileKeys, renderKeyboardList } from '../src/render/emoji-pack.js';
+import { EmojiPackConfig, formatTileLetter, orderedTileKeys, renderKeyboardList } from '../src/render/emoji-pack.js';
 
 function game(answer: string, guesses: string[]): GameRow {
   return {
@@ -43,5 +43,15 @@ describe('renderKeyboardList', () => {
     expect(text).toContain('W-green-id');
     expect(text).toContain('R-yellow-id');
     expect(text).not.toContain('C-dark-gray-id');
+  });
+});
+
+describe('formatTileLetter', () => {
+  it('uses dark-gray tiles for forbidden custom emoji letters', () => {
+    expect(formatTileLetter('c', 'dark-gray', pack())).toContain('C-dark-gray-id');
+  });
+
+  it('falls back to dark square letters without a custom emoji pack', () => {
+    expect(formatTileLetter('c', 'dark-gray', null)).toBe('⬛C');
   });
 });

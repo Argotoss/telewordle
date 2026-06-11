@@ -1,10 +1,9 @@
 import Database from 'better-sqlite3';
 import { isEmojiPackConfig, type EmojiPackConfig } from './render/emoji-pack.js';
 
-export type RenderMode = 'image' | 'text';
-
 export interface CreativitySettings {
   enabled: boolean;
+  configured: boolean;
   mode: 'time' | 'count';
   /** time window in seconds (mode === 'time') */
   seconds: number;
@@ -16,7 +15,6 @@ export type Difficulty = 'normal' | 'hard' | 'superhard';
 
 export interface ChatSettings {
   bareWord: boolean;
-  render: RenderMode;
   difficulty: Difficulty;
   creativity: CreativitySettings;
   emojiPack: EmojiPackConfig | null;
@@ -24,9 +22,8 @@ export interface ChatSettings {
 
 export const DEFAULT_SETTINGS: ChatSettings = {
   bareWord: false,
-  render: 'image',
   difficulty: 'normal',
-  creativity: { enabled: true, mode: 'time', seconds: 3600, count: 20 },
+  creativity: { enabled: false, configured: false, mode: 'time', seconds: 3600, count: 20 },
   emojiPack: null,
 };
 
@@ -58,6 +55,8 @@ export type TournamentStatus = 'joining' | 'active' | 'done' | 'cancelled';
 export interface TournamentPlayer {
   userId: number;
   userName: string;
+  username?: string;
+  firstName?: string;
 }
 
 export interface TournamentRow {
@@ -202,11 +201,21 @@ export function getSettings(db: Database.Database, chatId: number): ChatSettings
     | undefined;
   if (!row) return structuredClone(DEFAULT_SETTINGS);
   const parsed = JSON.parse(row.settings);
+  const rawCreativity = parsed.creativity ?? {};
+  const creativity = {
+    ...structuredClone(DEFAULT_SETTINGS.creativity),
+    ...rawCreativity,
+  };
+  creativity.configured =
+    rawCreativity.configured === true ||
+    rawCreativity.mode !== undefined ||
+    rawCreativity.seconds !== undefined ||
+    rawCreativity.count !== undefined;
   // merge so settings added in later versions get defaults
   return {
     ...structuredClone(DEFAULT_SETTINGS),
     ...parsed,
-    creativity: { ...structuredClone(DEFAULT_SETTINGS.creativity), ...(parsed.creativity ?? {}) },
+    creativity,
     emojiPack: isEmojiPackConfig(parsed.emojiPack) ? parsed.emojiPack : null,
   };
 }
@@ -270,7 +279,7 @@ export function recordUsedWord(db: Database.Database, chatId: number, word: stri
 }
 
 export function recentWords(db: Database.Database, chatId: number, c: CreativitySettings): Set<string> {
-  if (!c.enabled) return new Set();
+  if (!c.enabled || !c.configured) return new Set();
   let rows: { word: string }[];
   if (c.mode === 'time') {
     rows = db
@@ -318,8 +327,8 @@ export function createTournament(
 
 export function updateTournament(db: Database.Database, t: TournamentRow): void {
   db.prepare(
-    `UPDATE tournaments SET current_round = ?, status = ?, players = ?, scores = ?, turn_idx = ? WHERE id = ?`
-  ).run(t.current_round, t.status, JSON.stringify(t.players), JSON.stringify(t.scores), t.turn_idx, t.id);
+    `UPDATE tournaments SET rounds = ?, current_round = ?, status = ?, players = ?, scores = ?, turn_idx = ? WHERE id = ?`
+  ).run(t.rounds, t.current_round, t.status, JSON.stringify(t.players), JSON.stringify(t.scores), t.turn_idx, t.id);
 }
 
 // ---------- duels ----------

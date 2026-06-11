@@ -1,6 +1,16 @@
 import { scoreGuess } from './score.js';
 
-const ORDINALS = ['1st', '2nd', '3rd', '4th', '5th'];
+export type HardModeRequiredColor = 'green' | 'yellow';
+
+export interface HardModeRequiredLetter {
+  letter: string;
+  color: HardModeRequiredColor;
+}
+
+export interface HardModeViolation {
+  required: HardModeRequiredLetter[];
+  forbidden: string[];
+}
 
 /**
  * Hard mode: every hint revealed by previous guesses must be honored.
@@ -13,14 +23,14 @@ const ORDINALS = ['1st', '2nd', '3rd', '4th', '5th'];
  *  - if a previous guess revealed the answer holds exactly N of a letter
  *    (extra copies came back gray), you may not play more than N of it
  *
- * Returns a human-readable violation, or null if the guess is legal.
+ * Returns the hint letters involved in a violation, or null if the guess is legal.
  */
 export function hardModeViolation(
   answer: string,
   prevGuesses: string[],
   guess: string,
   superHard = false
-): string | null {
+): HardModeViolation | null {
   const a = answer.toLowerCase();
   const g = guess.toLowerCase();
 
@@ -50,26 +60,44 @@ export function hardModeViolation(
     }
   }
 
+  let positiveViolation = false;
   for (const [pos, letter] of greenAt) {
-    if (g[pos] !== letter) return `the ${ORDINALS[pos]} letter must be ${letter.toUpperCase()}`;
+    if (g[pos] !== letter) positiveViolation = true;
   }
   for (const [letter, n] of required) {
-    const have = g.split('').filter((c) => c === letter).length;
-    if (have < n) {
-      return n > 1
-        ? `the guess must contain ${n}× ${letter.toUpperCase()}`
-        : `the guess must contain ${letter.toUpperCase()}`;
-    }
+    if (countLetter(g, letter) < n) positiveViolation = true;
   }
+
+  const forbidden: string[] = [];
   if (superHard) {
     for (const [letter, limit] of maxAllowed) {
-      const have = g.split('').filter((c) => c === letter).length;
-      if (have > limit) {
-        return limit === 0
-          ? `${letter.toUpperCase()} is not in the word — you can't use it again`
-          : `the word has only ${limit}× ${letter.toUpperCase()} — you can't play ${have}`;
-      }
+      if (countLetter(g, letter) > limit) forbidden.push(letter.toUpperCase());
     }
   }
-  return null;
+
+  if (!positiveViolation && forbidden.length === 0) return null;
+  return { required: requiredHints(greenAt, required), forbidden };
+}
+
+function requiredHints(greenAt: Map<number, string>, required: Map<string, number>): HardModeRequiredLetter[] {
+  const hints: HardModeRequiredLetter[] = [];
+  const greenCounts = new Map<string, number>();
+
+  for (const [, letter] of [...greenAt].sort(([a], [b]) => a - b)) {
+    hints.push({ letter: letter.toUpperCase(), color: 'green' });
+    greenCounts.set(letter, (greenCounts.get(letter) ?? 0) + 1);
+  }
+
+  for (const [letter, n] of required) {
+    const yellowCount = n - (greenCounts.get(letter) ?? 0);
+    for (let i = 0; i < yellowCount; i++) {
+      hints.push({ letter: letter.toUpperCase(), color: 'yellow' });
+    }
+  }
+
+  return hints;
+}
+
+function countLetter(word: string, letter: string): number {
+  return word.split('').filter((c) => c === letter).length;
 }
