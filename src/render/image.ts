@@ -2,7 +2,8 @@ import { createCanvas, type Canvas, type SKRSContext2D } from '@napi-rs/canvas';
 import { GameRow } from '../db.js';
 import { getLanguage } from '../engine/languages.js';
 import { keyboardStatus, scoreGuess, TileStatus } from '../engine/score.js';
-import { MAX_GUESSES } from '../game/service.js';
+import { maxGuessesFor } from '../game/service.js';
+import { shortName, shouldShowNames } from './text.js';
 
 // Classic Wordle palette
 const COLORS = {
@@ -43,11 +44,26 @@ const STICKER_PAD_Y = 18;
 const BOARD_ALIGN_KEY_COUNT = 8; // board scaled to ~8 keys wide, like the classic layout
 
 const BOARD_W = BOARD_COLS * TILE + (BOARD_COLS - 1) * TILE_GAP;
-const BOARD_H = MAX_GUESSES * TILE + (MAX_GUESSES - 1) * TILE_GAP;
+const NAME_COL = 118;
+
+function boardRows(game: GameRow): number {
+  return maxGuessesFor(game);
+}
+
+function boardHeight(rows: number): number {
+  return rows * TILE + (rows - 1) * TILE_GAP;
+}
+
+/** Total board block width: the grid plus the names column when names are shown. */
+function boardBlockWidth(game: GameRow): number {
+  return BOARD_W + (shouldShowNames(game) ? NAME_COL : 0);
+}
 
 function drawBoard(ctx: SKRSContext2D, game: GameRow, left: number, top: number): void {
   const scores: TileStatus[][] = game.guesses.map((g) => scoreGuess(game.answer, g.word));
-  for (let row = 0; row < MAX_GUESSES; row++) {
+  const rows = boardRows(game);
+  const names = shouldShowNames(game);
+  for (let row = 0; row < rows; row++) {
     for (let col = 0; col < BOARD_COLS; col++) {
       const x = left + col * (TILE + TILE_GAP);
       const y = top + row * (TILE + TILE_GAP);
@@ -64,6 +80,14 @@ function drawBoard(ctx: SKRSContext2D, game: GameRow, left: number, top: number)
         roundRect(ctx, x + 1, y + 1, TILE - 2, TILE - 2, 6);
         ctx.stroke();
       }
+    }
+    if (names && row < game.guesses.length) {
+      ctx.save();
+      ctx.textAlign = 'left';
+      ctx.fillStyle = COLORS.keyUnused;
+      ctx.font = `18px ${FONT}`;
+      ctx.fillText(shortName(game.guesses[row].userName), left + BOARD_W + 16, top + row * (TILE + TILE_GAP) + TILE / 2 + 1);
+      ctx.restore();
     }
   }
 }
@@ -95,8 +119,10 @@ export function renderBoardImage(game: GameRow): Buffer {
   const maxKeys = Math.max(...rows.map((r) => r.length));
   const kbW = maxKeys * KEY_W + (maxKeys - 1) * KEY_GAP;
   const kbH = rows.length * KEY_H + (rows.length - 1) * KEY_GAP;
-  const width = Math.max(BOARD_W, kbW) + PAD * 2;
-  const height = PAD + BOARD_H + 30 + kbH + PAD;
+  const blockW = boardBlockWidth(game);
+  const boardH = boardHeight(boardRows(game));
+  const width = Math.max(blockW, kbW) + PAD * 2;
+  const height = PAD + boardH + 30 + kbH + PAD;
 
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');
@@ -105,21 +131,23 @@ export function renderBoardImage(game: GameRow): Buffer {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  drawBoard(ctx, game, (width - BOARD_W) / 2, PAD);
-  drawKeyboard(ctx, game, width, PAD + BOARD_H + 30);
+  drawBoard(ctx, game, (width - blockW) / 2, PAD);
+  drawKeyboard(ctx, game, width, PAD + boardH + 30);
 
   return canvas.toBuffer('image/png');
 }
 
 /** Transparent-background board as a 512px-wide WebP sticker. */
 export function renderBoardSticker(game: GameRow): Buffer {
-  const source = createCanvas(BOARD_W, BOARD_H);
+  const blockW = boardBlockWidth(game);
+  const source = createCanvas(blockW, boardHeight(boardRows(game)));
   const ctx = source.getContext('2d');
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   drawBoard(ctx, game, 0, 0);
 
-  const contentWidth = BOARD_ALIGN_KEY_COUNT * KEY_W + (BOARD_ALIGN_KEY_COUNT - 1) * KEY_GAP;
+  const alignKeys = shouldShowNames(game) ? 10 : BOARD_ALIGN_KEY_COUNT;
+  const contentWidth = alignKeys * KEY_W + (alignKeys - 1) * KEY_GAP;
   const scale = contentWidth / source.width;
   const width = Math.round(source.width * scale);
   const height = Math.round(source.height * scale);

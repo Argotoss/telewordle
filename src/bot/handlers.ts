@@ -1,8 +1,18 @@
 import type Database from 'better-sqlite3';
 import { Api, Bot, Context, InlineKeyboard, InputFile } from 'grammy';
-import { GameRow, TournamentRow, activeTournamentChats, allChatIds, getChatStats } from '../db.js';
+import {
+  GameRow,
+  TournamentRow,
+  activeTournamentChats,
+  allChatIds,
+  finishedDuels,
+  getChatStats,
+  recentFinishedGames,
+} from '../db.js';
+import { analyzeGame } from '../engine/analysis.js';
 import { LANGUAGES, looksLikeGuess } from '../engine/languages.js';
-import { GameService, MAX_GUESSES, UserRef, roundOrder } from '../game/service.js';
+import { GameService, MAX_GUESSES, UserRef, maxGuessesFor, roundOrder } from '../game/service.js';
+import { fetchDefinition } from './define.js';
 import {
   emojiPackFromStickers,
   escapeHtml,
@@ -17,8 +27,11 @@ import {
   HELP_TEXT,
   RENDER_LABEL,
   alreadyGuessedText,
+  breakdownText,
   dailyShareText,
   hardModeViolationText,
+  historyText,
+  vsText,
   humanDuration,
   humanMs,
   parseCreativityValue,
@@ -177,19 +190,53 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     }
   }, 60_000);
 
+  // Board cleanup: remember the bot's last board-related messages per chat so
+  // they can be deleted when a fresh board is posted. The final board of a
+  // finished game is never cleaned up — it stays as the game's record.
+  const boardMsgs = new Map<number, number[]>();
+
+  async function cleanupOldBoards(api: Api, chatId: number): Promise<void> {
+    if (!svc.settings(chatId).cleanup) return;
+    for (const id of boardMsgs.get(chatId) ?? []) {
+      await api.deleteMessage(chatId, id).catch(() => {});
+    }
+    boardMsgs.delete(chatId);
+  }
+
   async function sendBoard(api: Api, chatId: number, game: GameRow, caption: string): Promise<void> {
     const s = svc.settings(chatId);
+    await cleanupOldBoards(api, chatId);
+    const ids: number[] = [];
     if (s.render === 'image') {
       const buf = renderBoardImage(game);
-      await api.sendPhoto(chatId, new InputFile(buf, 'board.png'), { caption });
+      ids.push((await api.sendPhoto(chatId, new InputFile(buf, 'board.png'), { caption })).message_id);
     } else if (s.render === 'sticker') {
-      await api.sendSticker(chatId, new InputFile(renderBoardSticker(game), 'board.webp'));
+      ids.push((await api.sendSticker(chatId, new InputFile(renderBoardSticker(game), 'board.webp'))).message_id);
       if (game.status === 'active' && game.guesses.length > 0) {
-        await api.sendSticker(chatId, new InputFile(renderKeyboardSticker(game), 'keyboard.webp'));
+        ids.push((await api.sendSticker(chatId, new InputFile(renderKeyboardSticker(game), 'keyboard.webp'))).message_id);
       }
-      if (caption) await api.sendMessage(chatId, caption);
+      if (caption) ids.push((await api.sendMessage(chatId, caption)).message_id);
     } else {
-      await api.sendMessage(chatId, `${caption}\n\n${textBoard(game)}`);
+      ids.push((await api.sendMessage(chatId, `${caption}\n\n${textBoard(game)}`)).message_id);
+    }
+    if (game.status === 'active') boardMsgs.set(chatId, ids);
+    else boardMsgs.delete(chatId);
+  }
+
+  /** "Your turn" message after a tournament board — a real @mention when pings are on. */
+  async function sendTurnPing(chatId: number, player: { userId: number; userName: string }, prefix: string): Promise<void> {
+    const s = svc.settings(chatId);
+    try {
+      const msg = s.pings
+        ? await bot.api.sendMessage(
+            chatId,
+            `${prefix} <a href="tg://user?id=${player.userId}">${escapeHtml(player.userName)}</a>!`,
+            { parse_mode: 'HTML' }
+          )
+        : await bot.api.sendMessage(chatId, `${prefix} ${player.userName}!`);
+      boardMsgs.get(chatId)?.push(msg.message_id);
+    } catch {
+      // pings are cosmetic; never fail the game flow over them
     }
   }
 
@@ -282,15 +329,24 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     }
 
     const { game, guessNumber, solved, lost, tournament, duel } = out;
+    const maxTries = maxGuessesFor(game);
     const lines: string[] = [];
 
+    // a small reaction on the decisive guess message
+    const guessMsgId = ctx.message?.message_id;
+    if (guessMsgId && (solved || lost)) {
+      ctx.api
+        .setMessageReaction(chatId, guessMsgId, [{ type: 'emoji', emoji: solved ? '🎉' : '😱' }])
+        .catch(() => {});
+    }
+
     if (solved) {
-      lines.push(`🎉 ${user.name} got it in ${guessNumber}/${MAX_GUESSES} — the word was ${game.answer.toUpperCase()}!`);
+      lines.push(`🎉 ${user.name} got it in ${guessNumber}/${maxTries} — the word was ${game.answer.toUpperCase()}!`);
     } else if (lost) {
       if (duel) lines.push(`💀 Out of guesses! The word stays secret until your opponent finishes.`);
       else lines.push(`💀 Out of guesses! The word was ${game.answer.toUpperCase()}.`);
     } else {
-      lines.push(`${user.name} guessed ${out.game.guesses[guessNumber - 1].word.toUpperCase()} — ${guessNumber}/${MAX_GUESSES} tries used.`);
+      lines.push(`${user.name} guessed ${out.game.guesses[guessNumber - 1].word.toUpperCase()} — ${guessNumber}/${maxTries} tries used.`);
     }
 
     if (tournament) {
@@ -298,8 +354,8 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       if (tournamentEnded) clearTurnTimers(chatId);
       else scheduleTurnTimers(chatId);
       if (pointsAwarded > 0) lines.push(`🏅 +${pointsAwarded} pts for ${user.name}!`);
-      if (!roundEnded && nextPlayer) lines.push(`Next up: ${nextPlayer.userName}`);
       await sendBoard(ctx.api, chatId, game, lines.join('\n'));
+      if (!roundEnded && nextPlayer) await sendTurnPing(chatId, nextPlayer, '👉 Your turn,');
 
       if (tournamentEnded) {
         const winnerNames = winners.map((w) => w.userName).join(' & ');
@@ -308,11 +364,12 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
         );
       } else if (roundEnded && nextGame && nextPlayer) {
         await sendBoard(
-      ctx.api,
+          ctx.api,
           chatId,
           nextGame,
-          `🏆 Round ${t.current_round}/${t.rounds} — new word!\nStandings so far:\n${standingsText(t)}\n\nTurn order: ${turnOrderText(t)}\n${nextPlayer.userName} goes first.`
+          `🏆 Round ${t.current_round}/${t.rounds} — new word!\nStandings so far:\n${standingsText(t)}\n\nTurn order: ${turnOrderText(t)}`
         );
+        await sendTurnPing(chatId, nextPlayer, '👉 You go first,');
       }
       return;
     }
@@ -339,6 +396,16 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     await sendBoard(ctx.api, chatId, game, lines.join('\n'));
     if (game.kind === 'daily' && (solved || lost)) {
       await ctx.reply(dailyShareText(game));
+    }
+    if ((solved || lost) && svc.settings(chatId).breakdown) {
+      try {
+        let text = breakdownText(game, analyzeGame(game));
+        const def = await fetchDefinition(game.answer, game.lang);
+        if (def) text += `\n\n${def}`;
+        await ctx.reply(text);
+      } catch {
+        // the breakdown is a bonus — never let it break the game flow
+      }
     }
   }
 
@@ -450,6 +517,74 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     await ctx.reply(topText(getChatStats(db, ctx.chat.id)));
   });
 
+  bot.command('hint', async (ctx) => {
+    if (!svc.settings(ctx.chat.id).hints) {
+      return void (await ctx.reply('Hints are disabled here. Enable with /settings hints on.'));
+    }
+    const res = svc.useHint(ctx.chat.id);
+    switch (res.type) {
+      case 'no_game':
+        return void (await ctx.reply('No game running here. Send /play to start one!'));
+      case 'not_here':
+        return void (await ctx.reply('No hints in tournaments or duels — that would be too easy!'));
+      case 'no_tries':
+        return void (await ctx.reply('Not enough tries left to afford a hint (it costs one).'));
+      case 'nothing_to_reveal':
+        return void (await ctx.reply('Nothing left to reveal — your guesses already touched every letter of the word!'));
+      case 'ok':
+        return void (await ctx.reply(
+          `💡 The word contains the letter ${res.letter.toUpperCase()}!\nThat cost one try — ${res.triesLeft} left.`
+        ));
+    }
+  });
+
+  bot.command('history', async (ctx) => {
+    await ctx.reply(historyText(recentFinishedGames(db, ctx.chat.id)));
+  });
+
+  bot.command('vs', async (ctx) => {
+    const chatId = ctx.chat.id;
+    const me = userRef(ctx);
+    const repliedTo = ctx.message?.reply_to_message?.from;
+    let other: { id: number; name: string } | null = null;
+
+    if (repliedTo && !repliedTo.is_bot) {
+      other = { id: repliedTo.id, name: [repliedTo.first_name, repliedTo.last_name].filter(Boolean).join(' ') };
+    } else {
+      const arg = (ctx.match ?? '').trim().toLowerCase();
+      if (arg) {
+        const match = getChatStats(db, chatId).find((s) => s.name.toLowerCase().includes(arg));
+        if (match) other = { id: match.user_id, name: match.name };
+      }
+    }
+    if (!other) {
+      return void (await ctx.reply('Reply to someone with /vs, or use /vs NAME (a name from /top).'));
+    }
+    if (other.id === me.id) return void (await ctx.reply('🪞 You vs you would end in a draw.'));
+
+    const duels = finishedDuels(db, chatId).filter(
+      (d) =>
+        d.opponent &&
+        [d.challenger.userId, d.opponent.userId].includes(me.id) &&
+        [d.challenger.userId, d.opponent.userId].includes(other.id)
+    );
+    const record = { aWins: 0, bWins: 0, draws: 0 };
+    for (const d of duels) {
+      const winner = svc.duelWinner(d);
+      if (winner === 'draw' || !winner) record.draws++;
+      else if (winner.userId === me.id) record.aWins++;
+      else record.bWins++;
+    }
+    await ctx.reply(vsText(svc.statsFor(chatId, me.id), svc.statsFor(chatId, other.id), me.name, other.name, record));
+  });
+
+  bot.command('define', async (ctx) => {
+    const [last] = recentFinishedGames(db, ctx.chat.id, 1);
+    if (!last) return void (await ctx.reply('No finished games yet — definitions come after a game ends.'));
+    const def = await fetchDefinition(last.answer, last.lang);
+    await ctx.reply(def ?? `📖 No definition found for ${last.answer.toUpperCase()} (English words only for now).`);
+  });
+
   bot.command('daily', async (ctx) => {
     const chatId = ctx.chat.id;
     const arg = (ctx.match ?? '').trim().toLowerCase();
@@ -490,6 +625,21 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const chatId = ctx.chat.id;
     const args = (ctx.match ?? '').trim();
     if (args) {
+      const toggle = args.match(/^(cleanup|hints|pings|breakdown)\s+(on|off)$/i);
+      if (toggle) {
+        const key = toggle[1].toLowerCase() as 'cleanup' | 'hints' | 'pings' | 'breakdown';
+        const value = toggle[2].toLowerCase() === 'on';
+        const s = svc.settings(chatId);
+        s[key] = value;
+        svc.saveSettings(chatId, s);
+        const labels = {
+          cleanup: 'Board cleanup (delete old boards)',
+          hints: 'Hints (/hint trades a try for a letter)',
+          pings: 'Turn @pings',
+          breakdown: 'Post-game breakdown',
+        };
+        return void (await ctx.reply(`${value ? '✅' : '🚫'} ${labels[key]}: ${value ? 'ON' : 'OFF'}`));
+      }
       const turn = args.match(/^turntime\s+(.+)$/i);
       if (turn) {
         const v = turn[1].trim().toLowerCase();
@@ -643,8 +793,9 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       ctx.api,
       ctx.chat!.id,
       res.game,
-      `🏆 Round 1/${res.t.rounds} — the word is set!\nTurn order: ${turnOrderText(res.t)}\n${res.firstPlayer.userName} goes first (${hint}).${timerNote}`
+      `🏆 Round 1/${res.t.rounds} — the word is set!\nTurn order: ${turnOrderText(res.t)} (${hint}).${timerNote}`
     );
+    await sendTurnPing(ctx.chat!.id, res.firstPlayer, '👉 You go first,');
     scheduleTurnTimers(ctx.chat!.id);
   });
 

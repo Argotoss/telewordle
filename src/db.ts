@@ -26,6 +26,14 @@ export interface ChatSettings {
   language: string;
   /** Daily puzzle auto-post time as 'HH:MM' (server time), or null when not scheduled. */
   dailyTime: string | null;
+  /** Delete the previous board message when posting a fresh one. */
+  cleanup: boolean;
+  /** Allow /hint (reveal a letter at the cost of one try). */
+  hints: boolean;
+  /** Mention (@ping) tournament players when it is their turn. */
+  pings: boolean;
+  /** Post a per-guess analysis after normal/daily games end. */
+  breakdown: boolean;
   creativity: CreativitySettings;
   /** Custom emoji tiles for hint messages (set via /usepack), or null for the bundled default. */
   emojiPack: EmojiPackConfig | null;
@@ -39,6 +47,10 @@ export const DEFAULT_SETTINGS: ChatSettings = {
   turnTime: 120,
   language: 'en',
   dailyTime: null,
+  cleanup: true,
+  hints: true,
+  pings: true,
+  breakdown: true,
   creativity: { enabled: true, mode: 'time', seconds: 3600, count: 20 },
   emojiPack: null,
 };
@@ -62,6 +74,8 @@ export interface GameRow {
   guesses: GuessEntry[];
   /** rejected attempts per user this game (normal games; tournaments track per turn instead) */
   fail_counts: Record<string, number>;
+  /** letters revealed via /hint — each one burned a try */
+  hints: string[];
   lang: string;
   /** set for kind 'daily': the puzzle date 'YYYY-MM-DD' */
   daily_date: string | null;
@@ -156,6 +170,7 @@ export function openDb(path: string): Database.Database {
       kind TEXT NOT NULL DEFAULT 'normal',
       guesses TEXT NOT NULL DEFAULT '[]',
       fail_counts TEXT NOT NULL DEFAULT '{}',
+      hints TEXT NOT NULL DEFAULT '[]',
       lang TEXT NOT NULL DEFAULT 'en',
       daily_date TEXT,
       started_at INTEGER NOT NULL,
@@ -235,6 +250,9 @@ export function openDb(path: string): Database.Database {
     db.exec("ALTER TABLE games ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'");
     db.exec('ALTER TABLE games ADD COLUMN daily_date TEXT');
   }
+  if (!gCols.some((c) => c.name === 'hints')) {
+    db.exec("ALTER TABLE games ADD COLUMN hints TEXT NOT NULL DEFAULT '[]'");
+  }
   const sCols = db.prepare('PRAGMA table_info(stats)').all() as { name: string }[];
   if (!sCols.some((c) => c.name === 'daily_played')) {
     db.exec('ALTER TABLE stats ADD COLUMN daily_played INTEGER NOT NULL DEFAULT 0');
@@ -272,7 +290,12 @@ export function saveSettings(db: Database.Database, chatId: number, s: ChatSetti
 // ---------- games ----------
 
 function parseGame(row: any): GameRow {
-  return { ...row, guesses: JSON.parse(row.guesses), fail_counts: JSON.parse(row.fail_counts ?? '{}') };
+  return {
+    ...row,
+    guesses: JSON.parse(row.guesses),
+    fail_counts: JSON.parse(row.fail_counts ?? '{}'),
+    hints: JSON.parse(row.hints ?? '[]'),
+  };
 }
 
 export function getActiveGame(db: Database.Database, chatId: number): GameRow | null {
@@ -325,8 +348,37 @@ export function activeTournamentChats(db: Database.Database): number[] {
 
 export function updateGame(db: Database.Database, game: GameRow): void {
   db.prepare(
-    `UPDATE games SET status = ?, guesses = ?, fail_counts = ?, finished_at = ? WHERE id = ?`
-  ).run(game.status, JSON.stringify(game.guesses), JSON.stringify(game.fail_counts), game.finished_at, game.id);
+    `UPDATE games SET status = ?, guesses = ?, fail_counts = ?, hints = ?, finished_at = ? WHERE id = ?`
+  ).run(
+    game.status,
+    JSON.stringify(game.guesses),
+    JSON.stringify(game.fail_counts),
+    JSON.stringify(game.hints),
+    game.finished_at,
+    game.id
+  );
+}
+
+/** Recently finished games in this chat, newest first (for /history and /define). */
+export function recentFinishedGames(db: Database.Database, chatId: number, limit = 10): GameRow[] {
+  return (
+    db
+      .prepare(
+        `SELECT * FROM games WHERE chat_id = ? AND status IN ('solved','lost') AND kind != 'duel'
+         ORDER BY finished_at DESC LIMIT ?`
+      )
+      .all(chatId, limit) as any[]
+  ).map(parseGame);
+}
+
+/** All finished duels announced in this chat (for /vs head-to-head records). */
+export function finishedDuels(db: Database.Database, chatId: number): DuelRow[] {
+  const rows = db.prepare(`SELECT * FROM duels WHERE chat_id = ? AND status = 'done'`).all(chatId) as any[];
+  return rows.map((row) => ({
+    ...row,
+    challenger: JSON.parse(row.challenger),
+    opponent: row.opponent ? JSON.parse(row.opponent) : null,
+  }));
 }
 
 // ---------- used words (creativity mode) ----------

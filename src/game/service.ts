@@ -32,6 +32,11 @@ import { getDailyGame, recordDailyResult } from '../db.js';
 
 export const MAX_GUESSES = 6;
 
+/** Effective try limit for a game: every /hint burned one of the six tries. */
+export function maxGuessesFor(game: GameRow): number {
+  return MAX_GUESSES - (game.hints?.length ?? 0);
+}
+
 export interface UserRef {
   id: number;
   name: string;
@@ -59,6 +64,13 @@ export interface FailInfo {
   lockedOut: boolean;
   nextPlayer: TournamentPlayer | null;
 }
+
+export type HintOutcome =
+  | { type: 'ok'; letter: string; triesLeft: number; game: GameRow }
+  | { type: 'no_game' }
+  | { type: 'not_here' }
+  | { type: 'no_tries' }
+  | { type: 'nothing_to_reveal' };
 
 export type GuessOutcome =
   | { type: 'no_game' }
@@ -204,7 +216,7 @@ export class GameService {
     const score = scoreGuess(game.answer, word);
     const guessNumber = game.guesses.length;
     const solved = word === game.answer;
-    const lost = !solved && guessNumber >= MAX_GUESSES;
+    const lost = !solved && guessNumber >= maxGuessesFor(game);
 
     if (solved) game.status = 'solved';
     if (lost) game.status = 'lost';
@@ -235,6 +247,25 @@ export class GameService {
       }
     }
     return outcome;
+  }
+
+  /**
+   * Reveal one letter of the answer that no guess (or earlier hint) has touched
+   * yet, at the cost of one try. Group games only — never tournaments or duels.
+   */
+  useHint(chatId: number): HintOutcome {
+    const game = getActiveGame(this.db, chatId);
+    if (!game) return { type: 'no_game' };
+    if (game.kind === 'tournament' || game.kind === 'duel') return { type: 'not_here' };
+    if (game.guesses.length >= maxGuessesFor(game) - 1) return { type: 'no_tries' };
+    const known = new Set<string>(game.hints);
+    for (const g of game.guesses) for (const c of g.word) known.add(c);
+    const unrevealed = [...new Set(game.answer.split(''))].filter((c) => !known.has(c));
+    if (!unrevealed.length) return { type: 'nothing_to_reveal' };
+    const letter = unrevealed[Math.floor(Math.random() * unrevealed.length)];
+    game.hints.push(letter);
+    updateGame(this.db, game);
+    return { type: 'ok', letter, triesLeft: maxGuessesFor(game) - game.guesses.length, game };
   }
 
   /** Skip the current tournament player's turn (turn timer expired). */

@@ -1,8 +1,9 @@
 import { ChatSettings, Difficulty, GameRow, StatsRow, TournamentRow } from '../db.js';
+import type { GuessAnalysis } from '../engine/analysis.js';
 import type { HardModeViolation } from '../engine/hardmode.js';
 import { getLanguage, LANGUAGES } from '../engine/languages.js';
 import { scoreGuess, type TileStatus } from '../engine/score.js';
-import { MAX_GUESSES, roundOrder } from '../game/service.js';
+import { MAX_GUESSES, maxGuessesFor, roundOrder } from '../game/service.js';
 import { formatTileLetter, type EmojiPackConfig, type TileColor } from '../render/emoji-pack.js';
 
 export const HELP_TEXT = `🟩 Wordle Bot — How to Play
@@ -18,9 +19,12 @@ Commands
 /play — start a new game
 /daily — today's daily puzzle (same word everywhere!)
 /guess WORD — submit a guess (/w works too)
+/hint — reveal a letter, costs one try
 /board — show the current board
 /giveup — end the game and reveal the word
 /stats — your stats · /top — chat leaderboard
+/history — recent games · /vs — head-to-head record
+/define — what did that word even mean?
 /tournament N — start an N-round turn-based tournament
 /challenge — duel a friend (same word, fewest guesses wins)
 /settings — board style, language, difficulty, creativity & more
@@ -93,6 +97,10 @@ export function settingsText(s: ChatSettings): string {
 • Max fails: ${s.maxFails > 0 ? `${s.maxFails} per player` : 'unlimited'} · /settings fails 5 | off
 • Turn timer: ${s.turnTime > 0 ? `${humanDuration(s.turnTime)} (tournaments)` : 'off'} · /settings turntime 2m | off
 • Daily puzzle: ${s.dailyTime ? `auto-post at ${s.dailyTime}` : 'manual — /daily to play'} · /daily 09:00 | off
+• Hints: ${s.hints ? 'ON — /hint trades 1 try for a letter' : 'OFF'} · /settings hints on | off
+• Board cleanup: ${s.cleanup ? 'ON — old boards get deleted' : 'OFF'} · /settings cleanup on | off
+• Turn pings: ${s.pings ? 'ON — @mentions on your turn' : 'OFF'} · /settings pings on | off
+• Breakdown: ${s.breakdown ? 'ON — analysis after each game' : 'OFF'} · /settings breakdown on | off
 • Emoji pack: ${s.emojiPack ? s.emojiPack.name : 'default'} · /usepack NAME | off
 
 Fails: rejected guesses lock you out of the game (tournaments: forfeit your turn).
@@ -195,10 +203,88 @@ export function topText(rows: StatsRow[]): string {
   return `🏆 Leaderboard\n\n${lines.join('\n')}\n\nRanked by winning guesses. Play to climb!`;
 }
 
+export function timeAgo(ts: number, now = Date.now()): string {
+  const s = Math.max(0, Math.floor((now - ts) / 1000));
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+/** /history — the chat's recent games at a glance. */
+export function historyText(games: GameRow[]): string {
+  if (!games.length) return '📜 No finished games here yet — /play to write some history!';
+  const lines = games.map((g) => {
+    const icon = g.status === 'solved' ? '🟢' : '🔴';
+    const kind = g.kind === 'daily' ? '☀️ ' : g.kind === 'tournament' ? '🏆 ' : '';
+    const result =
+      g.status === 'solved'
+        ? `${g.guesses.length}/${maxGuessesFor(g)} by ${g.guesses[g.guesses.length - 1].userName}`
+        : `X/${maxGuessesFor(g)}`;
+    return `${icon} ${kind}${g.answer.toUpperCase()} — ${result} · ${timeAgo(g.finished_at ?? g.started_at)}`;
+  });
+  return `📜 Last ${games.length} game${games.length > 1 ? 's' : ''}\n\n${lines.join('\n')}`;
+}
+
+/** /vs — head-to-head rivalry card. The 👑 marks who leads each category. */
+export function vsText(
+  a: StatsRow,
+  b: StatsRow,
+  nameA: string,
+  nameB: string,
+  duels: { aWins: number; bWins: number; draws: number }
+): string {
+  const crown = (va: number, vb: number): [string, string] =>
+    va > vb ? [' 👑', ''] : vb > va ? ['', ' 👑'] : ['', ''];
+  const line = (emoji: string, label: string, va: number, vb: number, fmt = (n: number) => String(n)) => {
+    const [ca, cb] = crown(va, vb);
+    return `${emoji} ${label} — ${fmt(va)}${ca} vs ${fmt(vb)}${cb}`;
+  };
+  const pct = (s: StatsRow) => (s.games_played ? Math.round((100 * s.games_won) / s.games_played) : 0);
+
+  const lines = [
+    `⚔️ ${nameA} 🆚 ${nameB}`,
+    '',
+    line('🎯', 'Solves', a.solves, b.solves),
+    line('🏆', 'Win rate', pct(a), pct(b), (n) => `${n}%`),
+    line('🔥', 'Best streak', a.best_streak, b.best_streak),
+  ];
+  if (a.daily_played > 0 || b.daily_played > 0) lines.push(line('☀️', 'Daily best streak', a.daily_best, b.daily_best));
+  if (a.tournament_points > 0 || b.tournament_points > 0) {
+    lines.push(line('🏟', 'Tournament pts', a.tournament_points, b.tournament_points));
+  }
+  const totalDuels = duels.aWins + duels.bWins + duels.draws;
+  if (totalDuels > 0) {
+    const [ca, cb] = crown(duels.aWins, duels.bWins);
+    lines.push(`⚔️ Duels head-to-head — ${duels.aWins}${ca} : ${duels.bWins}${cb}${duels.draws ? ` (${duels.draws} draws)` : ''}`);
+  }
+  return lines.join('\n');
+}
+
+const VERDICT_LABEL: Record<GuessAnalysis['verdict'], string> = {
+  solved: '🏁 solved it!',
+  lucky: '🍀 lucky',
+  solid: '🎯 solid',
+  unlucky: '😬 unlucky',
+};
+
+/** Post-game per-guess breakdown: how each guess narrowed the candidate pool. */
+export function breakdownText(game: GameRow, rows: GuessAnalysis[]): string {
+  const fmt = (n: number) => n.toLocaleString('en-US');
+  const lines = rows.map((r, i) => {
+    const head = `${ROW_NUM[i]} ${r.word.toUpperCase()} · ${r.userName}`;
+    if (r.verdict === 'solved') return `${head} — ${VERDICT_LABEL.solved}`;
+    const expectation =
+      r.verdict === 'lucky' || r.verdict === 'unlucky' ? ` (expected ~${Math.max(1, Math.round(r.expected))})` : '';
+    return `${head} — ${fmt(r.before)} → ${fmt(r.after)} left · ${VERDICT_LABEL[r.verdict]}${expectation}`;
+  });
+  return `🔬 Breakdown — ${game.answer.toUpperCase()}\n\n${lines.join('\n')}`;
+}
+
 /** Spoiler-free result grid for the daily puzzle, in the classic shareable format. */
 export function dailyShareText(game: GameRow): string {
   const solved = game.status === 'solved';
-  const tries = solved ? `${game.guesses.length}/${MAX_GUESSES}` : `X/${MAX_GUESSES}`;
+  const tries = solved ? `${game.guesses.length}/${maxGuessesFor(game)}` : `X/${maxGuessesFor(game)}`;
   const grid = game.guesses
     .map((g) =>
       scoreGuess(game.answer, g.word)

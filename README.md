@@ -22,6 +22,10 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
 | `/daily` | Today's daily puzzle — same word everywhere, daily streaks; `/daily 09:00` auto-posts it, `/daily off` stops |
 | `/top` | Chat leaderboard |
 | `/guess WORD` | Submit a guess (`/w WORD` works too) |
+| `/hint` | Reveal one letter of the word — costs one of the six tries |
+| `/history` | Recent games: word, result, who solved it |
+| `/vs` | Head-to-head rivalry card (reply to someone or `/vs NAME`) |
+| `/define` | Dictionary definition of the last answer (English) |
 | `/board` | Show the current board (and tournament standings) |
 | `/giveup` | Abandon the game and reveal the word |
 | `/stats` | Your stats in this chat |
@@ -47,6 +51,12 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
   - **super hard** — hard, plus gray letters can't be played again and known letter counts are enforced. You must use *all* information you have.
 - **Max failed attempts** (default **5**) — rejected guesses (unknown word, hard-mode or creativity violation) count as fails. In normal games, a player who hits the limit is locked out for the rest of that game; in tournaments, the turn is forfeited. `/settings fails 3`, or `/settings fails off` for unlimited.
 - **Turn timer** (default **2m**, tournaments) — the player at turn gets a halftime warning, then their turn is forfeited. `/settings turntime 90s`, or `off`.
+- **Board cleanup** (default **on**) — the bot deletes its previous board when posting a fresh one, so the chat stays tidy; the final board of each game is kept. `/settings cleanup off`.
+- **Hints** (default **on**) — `/hint` reveals a letter nobody has played yet, at the cost of one try. Disabled in tournaments and duels. `/settings hints off`.
+- **Turn pings** (default **on**) — tournament turn announcements @mention the player. `/settings pings off`.
+- **Post-game breakdown** (default **on**) — after each normal/daily game, a WordleBot-style analysis shows how much each guess narrowed the possible answers and who got lucky, plus a dictionary definition of the answer. `/settings breakdown off`.
+- **Names on the board** — when several people play one board, each row shows who guessed it (all render modes).
+- **Reactions** — the bot reacts 🎉 to the winning guess and 😱 to a failed sixth attempt.
 - **Language** (default **English**) — `/settings lang ru` switches new games to the Russian word list (ЙЦУКЕН keyboard included; ё plays as е). Adding a language is one entry in `src/engine/languages.ts` plus two word-list files under `data/words/<code>/`.
 - **Creativity mode** (default **on, 1-hour window**) — words used recently in this chat (guesses *and* answers) are banned from being guessed and from being picked as the answer. Configure as a time window or a word count:
   ```
