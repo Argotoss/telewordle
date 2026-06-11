@@ -58,18 +58,44 @@ function settingsKeyboard(svc: GameService, chatId: number): InlineKeyboard {
     .text(`Creativity mode: ${s.creativity.enabled ? 'ON ✅' : 'OFF'}`, 'set:creativity');
 }
 
-function lobbyText(t: TournamentRow): string {
+// Lobby look adopted from PR #2: custom people emoji, clickable player names,
+// and colored buttons with icon emoji (Join green, Start blue, Quit red).
+const PEOPLE_EMOJI = '<tg-emoji emoji-id="5942877472163892475">👥</tg-emoji>';
+const JOIN_EMOJI_ID = '5920090136627908485';
+const QUIT_EMOJI_ID = '5922712343011135025';
+const START_EMOJI_ID = '5994378304751145264';
+
+function lobbyTextHtml(t: TournamentRow): string {
+  const names = t.players
+    .map((p) => `<a href="tg://user?id=${p.userId}">${escapeHtml(p.userName)}</a>`)
+    .join(', ');
+  return `${PEOPLE_EMOJI} ${names} · ${t.rounds}
+
+Players guess in order, ${MAX_GUESSES} max guesses, faster solution gives more points!`;
+}
+
+function lobbyTextPlain(t: TournamentRow): string {
   const names = t.players.map((p) => p.userName).join(', ');
   return `🏆 Tournament — ${t.rounds} round${t.rounds > 1 ? 's' : ''}
 Players (${t.players.length}): ${names}
 
-Turn-based: players guess in order, the order rotates every round.
-Scoring: word solved on guess #1 = 6 pts … guess #6 = 1 pt.
-
-Tap Join to enter, then the creator taps Start.`;
+Players guess in order, ${MAX_GUESSES} max guesses, faster solution gives more points!`;
 }
 
-function lobbyKeyboard(t: TournamentRow): InlineKeyboard {
+/** Colored buttons with custom emoji icons — not in grammY's types yet, so shaped by hand. */
+function lobbyKeyboardStyled(t: TournamentRow): InlineKeyboard {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'Join', callback_data: `t:join:${t.id}`, style: 'success', icon_custom_emoji_id: JOIN_EMOJI_ID },
+        { text: 'Start', callback_data: `t:start:${t.id}`, style: 'primary', icon_custom_emoji_id: START_EMOJI_ID },
+      ],
+      [{ text: 'Quit', callback_data: `t:quit:${t.id}`, style: 'danger', icon_custom_emoji_id: QUIT_EMOJI_ID }],
+    ],
+  } as unknown as InlineKeyboard;
+}
+
+function lobbyKeyboardPlain(t: TournamentRow): InlineKeyboard {
   return new InlineKeyboard()
     .text('✋ Join', `t:join:${t.id}`)
     .text('▶️ Start', `t:start:${t.id}`)
@@ -164,6 +190,29 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       if (caption) await api.sendMessage(chatId, caption);
     } else {
       await api.sendMessage(chatId, `${caption}\n\n${textBoard(game)}`);
+    }
+  }
+
+  /** Pretty lobby (styled buttons + custom emoji); falls back to the plain version if rejected. */
+  async function sendLobby(ctx: Context, t: TournamentRow): Promise<void> {
+    try {
+      await ctx.reply(lobbyTextHtml(t), { parse_mode: 'HTML', reply_markup: lobbyKeyboardStyled(t) });
+    } catch {
+      await ctx.reply(lobbyTextPlain(t), { reply_markup: lobbyKeyboardPlain(t) });
+    }
+  }
+
+  async function editLobby(ctx: Context, t: TournamentRow, started = false): Promise<void> {
+    const suffix = started ? '\n\n✅ Started!' : '';
+    try {
+      await ctx.editMessageText(lobbyTextHtml(t) + suffix, {
+        parse_mode: 'HTML',
+        reply_markup: started ? undefined : lobbyKeyboardStyled(t),
+      });
+    } catch {
+      await ctx
+        .editMessageText(lobbyTextPlain(t) + suffix, { reply_markup: started ? undefined : lobbyKeyboardPlain(t) })
+        .catch(() => {});
     }
   }
 
@@ -371,7 +420,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const game = svc.activeGame(chatId);
     const t = svc.openTournament(chatId);
     if (!game) {
-      if (t && t.status === 'joining') return void (await ctx.reply(lobbyText(t), { reply_markup: lobbyKeyboard(t) }));
+      if (t && t.status === 'joining') return void (await sendLobby(ctx, t));
       return void (await ctx.reply('No active game. Send /play to start one!'));
     }
     let caption = `Current board — ${game.guesses.length}/${MAX_GUESSES} guesses used.`;
@@ -518,7 +567,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const existing = svc.openTournament(chatId);
     if (existing) {
       if (existing.status === 'joining')
-        return void (await ctx.reply(lobbyText(existing), { reply_markup: lobbyKeyboard(existing) }));
+        return void (await sendLobby(ctx, existing));
       return void (await ctx.reply(`🏆 Tournament in progress — round ${existing.current_round}/${existing.rounds}.\nStandings:\n${standingsText(existing)}`));
     }
     const rounds = parseInt(arg, 10);
@@ -528,7 +577,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     if (svc.activeGame(chatId)) return void (await ctx.reply('Finish the current game first (/giveup to abandon it).'));
     const t = svc.createTournament(chatId, rounds, userRef(ctx));
     if (!t) return void (await ctx.reply('Could not create a tournament right now.'));
-    await ctx.reply(lobbyText(t), { reply_markup: lobbyKeyboard(t) });
+    await sendLobby(ctx, t);
   });
 
   bot.command('challenge', async (ctx) => {
@@ -565,7 +614,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const res = svc.joinTournament(parseInt(ctx.match[1], 10), userRef(ctx));
     if (!res || res === 'closed') return void (await ctx.answerCallbackQuery('This tournament is not open for joining.'));
     if (res === 'already_in') return void (await ctx.answerCallbackQuery('You are already in!'));
-    await ctx.editMessageText(lobbyText(res), { reply_markup: lobbyKeyboard(res) });
+    await editLobby(ctx, res);
     await ctx.answerCallbackQuery('Joined! 🏆');
   });
 
@@ -573,7 +622,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const res = svc.quitTournament(parseInt(ctx.match[1], 10), ctx.from.id);
     if (!res || res === 'closed') return void (await ctx.answerCallbackQuery('This tournament can no longer be left.'));
     if (res === 'not_in') return void (await ctx.answerCallbackQuery('You are not in this tournament.'));
-    await ctx.editMessageText(lobbyText(res), { reply_markup: lobbyKeyboard(res) });
+    await editLobby(ctx, res);
     await ctx.answerCallbackQuery('You left the tournament.');
   });
 
@@ -586,7 +635,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     if (res === 'too_few') return void (await ctx.answerCallbackQuery('Need at least 2 players!'));
     if (!res) return void (await ctx.answerCallbackQuery('Could not start the tournament.'));
     await ctx.answerCallbackQuery('Game on!');
-    await ctx.editMessageText(lobbyText(res.t).replace('Tap Join to enter, then the creator taps Start.', '✅ Started!'));
+    await editLobby(ctx, res.t, true);
     const s = svc.settings(ctx.chat!.id);
     const hint = s.bareWord ? 'type any 5-letter word' : 'use /guess WORD';
     const timerNote = s.turnTime > 0 ? ` ⏱ ${humanDuration(s.turnTime)} per turn.` : '';
