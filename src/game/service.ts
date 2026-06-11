@@ -86,6 +86,8 @@ export type GuessOutcome =
   | { type: 'already_guessed'; word: string; failInfo?: FailInfo }
   | { type: 'locked_out'; max: number }
   | { type: 'not_your_turn'; currentPlayer: TournamentPlayer }
+  /** a non-participant typed a word during a tournament — stay silent, don't spam */
+  | { type: 'ignored' }
   | {
       type: 'accepted';
       game: GameRow;
@@ -186,7 +188,10 @@ export class GameService {
       if (tournament && tournament.status === 'active') {
         const order = roundOrder(tournament.players, tournament.current_round);
         const current = order[tournament.turn_idx % order.length];
-        if (current.userId !== user.id) return { type: 'not_your_turn', currentPlayer: current };
+        if (current.userId !== user.id) {
+          if (!tournament.players.some((p) => p.userId === user.id)) return { type: 'ignored' };
+          return { type: 'not_your_turn', currentPlayer: current };
+        }
       } else {
         tournament = null;
       }

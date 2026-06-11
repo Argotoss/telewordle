@@ -181,6 +181,9 @@ describe('tournaments', () => {
 
     // round 1, order A → B
     expect(svc.submitGuess(CHAT, B, 'crane').type).toBe('not_your_turn');
+    // spectators (non-participants) are silently ignored — no chat spam
+    expect(svc.submitGuess(CHAT, C, 'crane').type).toBe('ignored');
+    expect(svc.submitGuess(CHAT, C, 'xxxxx').type).toBe('ignored');
     expect(svc.submitGuess(CHAT, A, 'crane').type).toBe('accepted');
     expect(svc.submitGuess(CHAT, A, 'trace').type).toBe('not_your_turn');
 

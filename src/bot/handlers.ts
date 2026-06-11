@@ -392,8 +392,13 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
         await ctx.reply(`🚷 ${user.name}, you've used all ${out.max} failed attempts — sit this game out.`);
         return;
       case 'not_your_turn':
-        await ctx.reply(`⏳ Not so fast — it's ${out.currentPlayer.userName}'s turn.`);
+        await ctx.reply(
+          `⏳ Not so fast — it's <a href="tg://user?id=${out.currentPlayer.userId}">${escapeHtml(out.currentPlayer.userName)}</a>'s turn.`,
+          { parse_mode: 'HTML' }
+        );
         return;
+      case 'ignored':
+        return; // spectators typing words during a tournament get silence, not spam
     }
 
     const { game, guessNumber, solved, lost, tournament, duel } = out;
@@ -426,9 +431,12 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       if (!roundEnded && nextPlayer) await sendTurnPing(chatId, nextPlayer, '👉 Your turn,');
 
       if (tournamentEnded) {
-        const winnerNames = winners.map((w) => w.userName).join(' & ');
+        const winnerNames = winners
+          .map((w) => `<a href="tg://user?id=${w.userId}">${escapeHtml(w.userName)}</a>`)
+          .join(' & ');
         await ctx.reply(
-          `🏆 Tournament over!\n\n${standingsText(t)}\n\n👑 Winner${winners.length > 1 ? 's' : ''}: ${winnerNames}`
+          `🏆 Tournament over!\n\n${escapeHtml(standingsText(t))}\n\n👑 Winner${winners.length > 1 ? 's' : ''}: ${winnerNames}`,
+          { parse_mode: 'HTML' }
         );
       } else if (roundEnded && nextGame && nextPlayer) {
         await sendBoard(

@@ -1,10 +1,17 @@
+import Anthropic from '@anthropic-ai/sdk';
+import { ANTHROPIC_API_KEY } from '../config.js';
+
 /**
- * Dictionary lookups for the answer word.
- *  - English: dictionaryapi.dev (free, keyless)
- *  - Russian: ru.wiktionary.org plain-text extracts (free, keyless)
- * Both are best-effort: any failure returns null and the caller just skips the 📖 line.
+ * Definition of the answer word, best source first:
+ *  1. Claude (only when ANTHROPIC_API_KEY is set) — natural one-sentence
+ *     explanations in the game's language, works for every word incl. slang
+ *  2. dictionaryapi.dev (en) / ru.wiktionary.org (ru) — free, keyless
+ * Everything is best-effort: any failure falls through, and a final null
+ * just means the caller skips the 📖 line.
  */
 export async function fetchDefinition(word: string, lang: string): Promise<string | null> {
+  const ai = await fetchClaudeDefinition(word, lang);
+  if (ai) return ai;
   if (lang === 'ru') return fetchRussianDefinition(word);
   if (lang !== 'en') return null;
   try {
@@ -18,6 +25,39 @@ export async function fetchDefinition(word: string, lang: string): Promise<strin
     if (!def) return null;
     const pos = meaning?.partOfSpeech ? ` (${meaning.partOfSpeech})` : '';
     return `📖 ${word.toUpperCase()}${pos} — ${String(def).slice(0, 300)}`;
+  } catch {
+    return null;
+  }
+}
+
+let claude: Anthropic | null = null;
+
+function claudeClient(): Anthropic | null {
+  if (!ANTHROPIC_API_KEY) return null;
+  claude ??= new Anthropic({ apiKey: ANTHROPIC_API_KEY, timeout: 8000, maxRetries: 1 });
+  return claude;
+}
+
+async function fetchClaudeDefinition(word: string, lang: string): Promise<string | null> {
+  const client = claudeClient();
+  if (!client) return null;
+  try {
+    const langName = lang === 'ru' ? 'Russian' : 'English';
+    const response = await client.messages.create({
+      model: 'claude-opus-4-8',
+      max_tokens: 200,
+      system:
+        'You write one-sentence dictionary definitions for a word game. Reply with only the definition sentence — no preamble, no quotes, no markdown. Write the definition in the same language as the word.',
+      messages: [{ role: 'user', content: `Define the ${langName} word "${word}".` }],
+    });
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!text) return null;
+    return `📖 ${word.toUpperCase()} — ${text.slice(0, 300)}`;
   } catch {
     return null;
   }
