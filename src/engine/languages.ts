@@ -9,7 +9,7 @@ export interface Language {
   alphabet: string;
   /** keyboard rows (uppercase) for image/sticker rendering */
   keyRows: string[];
-  /** matches one full bare guess in this language */
+  /** matches one full bare guess in this language (any playable length) */
   pattern: RegExp;
   /** canonicalize input (e.g. Russian ё → е) */
   normalize: (word: string) => string;
@@ -21,7 +21,7 @@ export const LANGUAGES: Record<string, Language> = {
     label: '🇬🇧 English',
     alphabet: 'abcdefghijklmnopqrstuvwxyz',
     keyRows: ['QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'],
-    pattern: /^[a-zA-Z]{5}$/,
+    pattern: /^[a-zA-Z]{3,10}$/,
     normalize: (w) => w.toLowerCase(),
   },
   ru: {
@@ -29,7 +29,7 @@ export const LANGUAGES: Record<string, Language> = {
     label: '🇷🇺 Русский',
     alphabet: 'абвгдежзийклмнопрстуфхцчшщъыьэюя',
     keyRows: ['ЙЦУКЕНГШЩЗХЪ', 'ФЫВАПРОЛДЖЭ', 'ЯЧСМИТЬБЮ'],
-    pattern: /^[а-яёА-ЯЁ]{5}$/,
+    pattern: /^[а-яёА-ЯЁ]{3,10}$/u,
     normalize: (w) => w.toLowerCase().replace(/ё/g, 'е'),
   },
 };

@@ -18,8 +18,8 @@ const COLORS = {
 
 const TILE = 62;
 const TILE_GAP = 6;
-const BOARD_COLS = 5;
 const PAD = 24;
+const NAME_ROOM = 130; // extra PNG width so names always fit beside wide boards
 
 const KEY_W = 40;
 const KEY_H = 54;
@@ -43,10 +43,18 @@ const STICKER_WIDTH = 512;
 const STICKER_PAD_Y = 18;
 const BOARD_ALIGN_KEY_COUNT = 8; // board scaled to ~8 keys wide, like the classic layout
 
-const BOARD_W = BOARD_COLS * TILE + (BOARD_COLS - 1) * TILE_GAP;
 
 function boardRows(game: GameRow): number {
   return maxGuessesFor(game);
+}
+
+function boardCols(game: GameRow): number {
+  return game.answer.length;
+}
+
+function boardWidth(game: GameRow): number {
+  const cols = boardCols(game);
+  return cols * TILE + (cols - 1) * TILE_GAP;
 }
 
 function boardHeight(rows: number): number {
@@ -71,9 +79,10 @@ function drawFittedText(ctx: SKRSContext2D, text: string, x: number, y: number, 
 function drawBoard(ctx: SKRSContext2D, game: GameRow, left: number, top: number, nameMaxWidth = 0): void {
   const scores: TileStatus[][] = game.guesses.map((g) => scoreGuess(game.answer, g.word));
   const rows = boardRows(game);
+  const cols = boardCols(game);
   const names = shouldShowNames(game) && nameMaxWidth > 14;
   for (let row = 0; row < rows; row++) {
-    for (let col = 0; col < BOARD_COLS; col++) {
+    for (let col = 0; col < cols; col++) {
       const x = left + col * (TILE + TILE_GAP);
       const y = top + row * (TILE + TILE_GAP);
       if (row < game.guesses.length) {
@@ -95,7 +104,7 @@ function drawBoard(ctx: SKRSContext2D, game: GameRow, left: number, top: number,
       ctx.textAlign = 'left';
       ctx.fillStyle = COLORS.keyUnused;
       const firstName = game.guesses[row].userName.split(/\s+/)[0] ?? '';
-      drawFittedText(ctx, firstName, left + BOARD_W + 10, top + row * (TILE + TILE_GAP) + TILE / 2 + 1, nameMaxWidth);
+      drawFittedText(ctx, firstName, left + boardWidth(game) + 10, top + row * (TILE + TILE_GAP) + TILE / 2 + 1, nameMaxWidth);
       ctx.restore();
     }
   }
@@ -128,8 +137,10 @@ export function renderBoardImage(game: GameRow): Buffer {
   const maxKeys = Math.max(...rows.map((r) => r.length));
   const kbW = maxKeys * KEY_W + (maxKeys - 1) * KEY_GAP;
   const kbH = rows.length * KEY_H + (rows.length - 1) * KEY_GAP;
+  const boardW = boardWidth(game);
   const boardH = boardHeight(boardRows(game));
-  const width = Math.max(BOARD_W, kbW) + PAD * 2;
+  const nameRoom = shouldShowNames(game) ? NAME_ROOM : 0;
+  const width = Math.max(boardW + nameRoom * 2, kbW) + PAD * 2; // symmetric so the board stays centered
   const height = PAD + boardH + 30 + kbH + PAD;
 
   const canvas = createCanvas(width, height);
@@ -139,8 +150,8 @@ export function renderBoardImage(game: GameRow): Buffer {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  const boardLeft = (width - BOARD_W) / 2;
-  const nameMaxWidth = width - boardLeft - BOARD_W - 14; // names live in the right margin
+  const boardLeft = (width - boardW) / 2;
+  const nameMaxWidth = width - boardLeft - boardW - 14; // names live in the right margin
   drawBoard(ctx, game, boardLeft, PAD, nameMaxWidth);
   drawKeyboard(ctx, game, width, PAD + boardH + 30);
 
@@ -149,12 +160,18 @@ export function renderBoardImage(game: GameRow): Buffer {
 
 /** Transparent-background board as a 512px-wide WebP sticker. The board is always centered. */
 export function renderBoardSticker(game: GameRow): Buffer {
+  const boardW = boardWidth(game);
+  const boardH = boardHeight(boardRows(game));
   const contentWidth = BOARD_ALIGN_KEY_COUNT * KEY_W + (BOARD_ALIGN_KEY_COUNT - 1) * KEY_GAP;
-  const scale = contentWidth / BOARD_W;
+  // width-driven scale, capped so tall boards (short words = huge tiles,
+  // long words = many rows) never exceed the 512px sticker height, and so
+  // player names keep readable side margins on small boards
+  let scale = Math.min(contentWidth / boardW, (STICKER_WIDTH - STICKER_PAD_Y * 2) / boardH);
+  if (shouldShowNames(game)) scale = Math.min(scale, STICKER_WIDTH / (boardW + 140));
   // symmetric side margins sized so the scaled canvas fills the full sticker width
-  const side = Math.floor((STICKER_WIDTH / scale - BOARD_W) / 2);
-  const sourceW = BOARD_W + side * 2;
-  const source = createCanvas(sourceW, boardHeight(boardRows(game)));
+  const side = Math.max(0, Math.floor((STICKER_WIDTH / scale - boardW) / 2));
+  const sourceW = boardW + side * 2;
+  const source = createCanvas(sourceW, boardH);
   const ctx = source.getContext('2d');
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';

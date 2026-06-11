@@ -24,6 +24,10 @@ export interface ChatSettings {
   turnTime: number;
   /** Word list language code (see engine/languages.ts). */
   language: string;
+  /** Length of the secret word for new games (3-10; daily puzzles are always 5). */
+  wordLength: number;
+  /** Per-length overrides of the try count; default for length n is n + 1. */
+  triesByLength: Record<string, number>;
   /** Daily puzzle auto-post time as 'HH:MM' (server time), or null when not scheduled. */
   dailyTime: string | null;
   /** Delete the previous board message when posting a fresh one. */
@@ -46,6 +50,8 @@ export const DEFAULT_SETTINGS: ChatSettings = {
   maxFails: 5,
   turnTime: 120,
   language: 'en',
+  wordLength: 5,
+  triesByLength: {},
   dailyTime: null,
   cleanup: true,
   hints: true,
@@ -76,6 +82,8 @@ export interface GameRow {
   fail_counts: Record<string, number>;
   /** letters revealed via /hint — each one burned a try */
   hints: string[];
+  /** try budget frozen at creation (settings changes never affect running games) */
+  max_guesses: number;
   lang: string;
   /** set for kind 'daily': the puzzle date 'YYYY-MM-DD' */
   daily_date: string | null;
@@ -144,6 +152,12 @@ export interface StatsRow {
   dist4: number;
   dist5: number;
   dist6: number;
+  dist7: number;
+  dist8: number;
+  dist9: number;
+  dist10: number;
+  dist11: number;
+  dist12: number;
   fastest_ms: number | null;
   tournaments_played: number;
   tournaments_won: number;
@@ -173,6 +187,7 @@ export function openDb(path: string): Database.Database {
       guesses TEXT NOT NULL DEFAULT '[]',
       fail_counts TEXT NOT NULL DEFAULT '{}',
       hints TEXT NOT NULL DEFAULT '[]',
+      max_guesses INTEGER NOT NULL DEFAULT 6,
       lang TEXT NOT NULL DEFAULT 'en',
       daily_date TEXT,
       started_at INTEGER NOT NULL,
@@ -228,6 +243,12 @@ export function openDb(path: string): Database.Database {
       dist4 INTEGER NOT NULL DEFAULT 0,
       dist5 INTEGER NOT NULL DEFAULT 0,
       dist6 INTEGER NOT NULL DEFAULT 0,
+      dist7 INTEGER NOT NULL DEFAULT 0,
+      dist8 INTEGER NOT NULL DEFAULT 0,
+      dist9 INTEGER NOT NULL DEFAULT 0,
+      dist10 INTEGER NOT NULL DEFAULT 0,
+      dist11 INTEGER NOT NULL DEFAULT 0,
+      dist12 INTEGER NOT NULL DEFAULT 0,
       fastest_ms INTEGER,
       tournaments_played INTEGER NOT NULL DEFAULT 0,
       tournaments_won INTEGER NOT NULL DEFAULT 0,
@@ -256,6 +277,13 @@ export function openDb(path: string): Database.Database {
   }
   if (!gCols.some((c) => c.name === 'hints')) {
     db.exec("ALTER TABLE games ADD COLUMN hints TEXT NOT NULL DEFAULT '[]'");
+  }
+  if (!gCols.some((c) => c.name === 'max_guesses')) {
+    db.exec('ALTER TABLE games ADD COLUMN max_guesses INTEGER NOT NULL DEFAULT 6');
+  }
+  const sCols2 = db.prepare('PRAGMA table_info(stats)').all() as { name: string }[];
+  if (!sCols2.some((c) => c.name === 'dist7')) {
+    for (let i = 7; i <= 12; i++) db.exec(`ALTER TABLE stats ADD COLUMN dist${i} INTEGER NOT NULL DEFAULT 0`);
   }
   if (!tCols.some((c) => c.name === 'last_activity')) {
     db.exec('ALTER TABLE tournaments ADD COLUMN last_activity INTEGER NOT NULL DEFAULT 0');
@@ -323,15 +351,25 @@ export function createGame(
   chatId: number,
   answer: string,
   kind: GameKind = 'normal',
-  opts: { tournamentId?: number; duelId?: number; lang?: string; dailyDate?: string } = {}
+  opts: { tournamentId?: number; duelId?: number; lang?: string; dailyDate?: string; maxGuesses?: number } = {}
 ): GameRow {
   const now = Date.now();
   const info = db
     .prepare(
-      `INSERT INTO games (chat_id, answer, kind, lang, daily_date, started_at, tournament_id, duel_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO games (chat_id, answer, kind, lang, daily_date, max_guesses, started_at, tournament_id, duel_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(chatId, answer, kind, opts.lang ?? 'en', opts.dailyDate ?? null, now, opts.tournamentId ?? null, opts.duelId ?? null);
+    .run(
+      chatId,
+      answer,
+      kind,
+      opts.lang ?? 'en',
+      opts.dailyDate ?? null,
+      opts.maxGuesses ?? 6,
+      now,
+      opts.tournamentId ?? null,
+      opts.duelId ?? null
+    );
   return getGame(db, Number(info.lastInsertRowid))!;
 }
 

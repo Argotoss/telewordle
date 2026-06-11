@@ -27,7 +27,8 @@ import {
 import { hardModeViolation, type HardModeViolation } from '../engine/hardmode.js';
 import { getLanguage } from '../engine/languages.js';
 import { scoreGuess, TileStatus } from '../engine/score.js';
-import { dailyAnswer, isValidWord, pickAnswer } from '../engine/words.js';
+import { fetchOfficialWordle } from '../engine/official-wordle.js';
+import { DEFAULT_WORD_LENGTH, availableLengths, dailyAnswer, isValidWord, pickAnswer } from '../engine/words.js';
 import { getDailyGame, recordDailyResult } from '../db.js';
 
 export const MAX_GUESSES = 6;
@@ -38,9 +39,23 @@ export const LOBBY_IDLE_MS = 3 * 60 * 60_000; // lobby with no joins/start
 export const TOURNAMENT_IDLE_MS = 3 * 60 * 60_000; // active tournament with no human guess
 export const GAME_IDLE_MS = 24 * 60 * 60_000; // regular game with no guesses
 
-/** Effective try limit for a game: every /hint burned one of the six tries. */
+export const MAX_TRIES = 12;
+
+/** Effective try limit for a game: its frozen budget minus hints burned. */
 export function maxGuessesFor(game: GameRow): number {
-  return MAX_GUESSES - (game.hints?.length ?? 0);
+  return (game.max_guesses ?? MAX_GUESSES) - (game.hints?.length ?? 0);
+}
+
+/** Try budget for a word length: the per-length override, or length + 1. */
+export function effectiveTries(s: ChatSettings, length: number): number {
+  const tries = s.triesByLength[String(length)] ?? length + 1;
+  return Math.max(1, Math.min(MAX_TRIES, tries));
+}
+
+/** The chat's configured length, snapped to what the language actually offers. */
+export function effectiveLength(s: ChatSettings): number {
+  const lengths = availableLengths(s.language);
+  return lengths.includes(s.wordLength) ? s.wordLength : DEFAULT_WORD_LENGTH;
 }
 
 export interface UserRef {
@@ -54,8 +69,8 @@ export function roundOrder(players: TournamentPlayer[], round: number): Tourname
   return [...players.slice(k), ...players.slice(0, k)];
 }
 
-export function pointsForGuessNumber(n: number): number {
-  return MAX_GUESSES + 1 - n; // guess #1 → 6 pts … guess #6 → 1 pt
+export function pointsForGuessNumber(n: number, maxGuesses: number = MAX_GUESSES): number {
+  return maxGuesses + 1 - n; // guess #1 earns the most, the final try earns 1
 }
 
 /**
@@ -81,6 +96,7 @@ export type HintOutcome =
 export type GuessOutcome =
   | { type: 'no_game' }
   | { type: 'not_a_word'; word: string; failInfo?: FailInfo }
+  | { type: 'wrong_length'; word: string; expected: number; failInfo?: FailInfo }
   | { type: 'creativity_blocked'; word: string; failInfo?: FailInfo }
   | { type: 'hard_mode_violation'; word: string; violation: HardModeViolation; superHard: boolean; failInfo?: FailInfo }
   | { type: 'already_guessed'; word: string; failInfo?: FailInfo }
@@ -130,21 +146,25 @@ export class GameService {
   startGame(chatId: number): GameRow | null {
     if (getActiveGame(this.db, chatId)) return null;
     const s = getSettings(this.db, chatId);
-    const answer = pickAnswer(recentWords(this.db, chatId, s.creativity), s.language);
-    return createGame(this.db, chatId, answer, 'normal', { lang: s.language });
+    const length = effectiveLength(s);
+    const answer = pickAnswer(recentWords(this.db, chatId, s.creativity), s.language, length);
+    return createGame(this.db, chatId, answer, 'normal', { lang: s.language, maxGuesses: effectiveTries(s, length) });
   }
 
   /**
    * Start (or fetch) today's daily puzzle. The word is deterministic per
    * language per date — every chat gets the same one.
    */
-  startDaily(chatId: number, dateStr: string): { game: GameRow; created: boolean } | 'busy' | 'done' {
+  async startDaily(chatId: number, dateStr: string): Promise<{ game: GameRow; created: boolean } | 'busy' | 'done'> {
     const existing = getDailyGame(this.db, chatId, dateStr);
     if (existing) return existing.status === 'active' ? { game: existing, created: false } : 'done';
     if (getActiveGame(this.db, chatId)) return 'busy';
     const s = getSettings(this.db, chatId);
-    const answer = dailyAnswer(dateStr, s.language);
-    const game = createGame(this.db, chatId, answer, 'daily', { lang: s.language, dailyDate: dateStr });
+    // The daily is sacred: always 5 letters and 6 tries, and for English it is
+    // THE official Wordle word of the day (deterministic pick as offline fallback).
+    const official = s.language === 'en' ? await fetchOfficialWordle(dateStr) : null;
+    const answer = official ?? dailyAnswer(dateStr, s.language, DEFAULT_WORD_LENGTH);
+    const game = createGame(this.db, chatId, answer, 'daily', { lang: s.language, dailyDate: dateStr, maxGuesses: 6 });
     return { game, created: true };
   }
 
@@ -206,7 +226,12 @@ export class GameService {
     const fail = <T extends Extract<GuessOutcome, { failInfo?: FailInfo }>>(outcome: T): T =>
       this.countFailedAttempt(tournament, lockoutApplies ? game : null, user, settings.maxFails, outcome);
 
-    if (!isValidWord(word, game.lang)) return fail({ type: 'not_a_word', word });
+    if (word.length !== game.answer.length && word !== game.answer) {
+      return fail({ type: 'wrong_length', word, expected: game.answer.length });
+    }
+    // the game's own answer is always guessable, even when it's outside our
+    // lists (official NYT words, custom words like лейло)
+    if (word !== game.answer && !isValidWord(word, game.lang)) return fail({ type: 'not_a_word', word });
     if (game.guesses.some((g) => g.word === word)) return fail({ type: 'already_guessed', word });
 
     // creativity mode (not for duels — both duelists must face the same word fairly)
@@ -254,7 +279,7 @@ export class GameService {
         }
       }
       if (tournament && tournament.status === 'active') {
-        outcome.tournament = this.advanceTournament(tournament, user, solved, lost, guessNumber);
+        outcome.tournament = this.advanceTournament(tournament, user, solved, lost, guessNumber, game);
       }
     }
     return outcome;
@@ -441,8 +466,13 @@ export class GameService {
 
   private newTournamentGame(t: TournamentRow): GameRow {
     const s = getSettings(this.db, t.chat_id);
-    const answer = pickAnswer(recentWords(this.db, t.chat_id, s.creativity), s.language);
-    return createGame(this.db, t.chat_id, answer, 'tournament', { tournamentId: t.id, lang: s.language });
+    const length = effectiveLength(s);
+    const answer = pickAnswer(recentWords(this.db, t.chat_id, s.creativity), s.language, length);
+    return createGame(this.db, t.chat_id, answer, 'tournament', {
+      tournamentId: t.id,
+      lang: s.language,
+      maxGuesses: effectiveTries(s, length),
+    });
   }
 
   /**
@@ -490,7 +520,8 @@ export class GameService {
     user: UserRef,
     solved: boolean,
     lost: boolean,
-    guessNumber: number
+    guessNumber: number,
+    game: GameRow
   ): NonNullable<Extract<GuessOutcome, { type: 'accepted' }>['tournament']> {
     let pointsAwarded = 0;
     const roundEnded = solved || lost;
@@ -500,7 +531,7 @@ export class GameService {
     let winners: TournamentPlayer[] = [];
 
     if (solved) {
-      pointsAwarded = pointsForGuessNumber(guessNumber);
+      pointsAwarded = pointsForGuessNumber(guessNumber, game.max_guesses ?? MAX_GUESSES);
       t.scores[String(user.id)] = (t.scores[String(user.id)] ?? 0) + pointsAwarded;
     }
     t.fail_count = 0; // an accepted guess always hands over a fresh turn
@@ -549,7 +580,7 @@ export class GameService {
   /** Create a duel; challenger plays in their private chat once they press Play. */
   createDuel(chatId: number, challenger: UserRef): DuelRow {
     const s = getSettings(this.db, chatId);
-    const answer = pickAnswer(recentWords(this.db, chatId, s.creativity), s.language);
+    const answer = pickAnswer(recentWords(this.db, chatId, s.creativity), s.language, effectiveLength(s));
     return createDuel(this.db, chatId, answer, {
       userId: challenger.id,
       userName: challenger.name,
@@ -583,8 +614,12 @@ export class GameService {
       d.status = 'active';
       updateDuel(this.db, d);
     }
-    const lang = getSettings(this.db, d.chat_id).language;
-    const game = createGame(this.db, privateChatId, d.answer, 'duel', { duelId: d.id, lang });
+    const origin = getSettings(this.db, d.chat_id);
+    const game = createGame(this.db, privateChatId, d.answer, 'duel', {
+      duelId: d.id,
+      lang: origin.language,
+      maxGuesses: effectiveTries(origin, d.answer.length),
+    });
     return { d: getDuel(this.db, duelId)!, game };
   }
 

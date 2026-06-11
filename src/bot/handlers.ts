@@ -11,7 +11,8 @@ import {
 } from '../db.js';
 import { analyzeGame } from '../engine/analysis.js';
 import { LANGUAGES, looksLikeGuess } from '../engine/languages.js';
-import { GameService, MAX_GUESSES, UserRef, maxGuessesFor, roundOrder } from '../game/service.js';
+import { availableLengths } from '../engine/words.js';
+import { GameService, MAX_TRIES, UserRef, effectiveLength, effectiveTries, maxGuessesFor, roundOrder } from '../game/service.js';
 import { BOT_TOKEN } from '../config.js';
 import { renderVsCard, type VsRow } from '../render/vscard.js';
 import { fetchDefinition } from './define.js';
@@ -81,21 +82,21 @@ const JOIN_EMOJI_ID = '5920090136627908485';
 const QUIT_EMOJI_ID = '5922712343011135025';
 const START_EMOJI_ID = '5994378304751145264';
 
-function lobbyTextHtml(t: TournamentRow): string {
+function lobbyTextHtml(t: TournamentRow, tries: number, length: number): string {
   const names = t.players
     .map((p) => `<a href="tg://user?id=${p.userId}">${escapeHtml(p.userName)}</a>`)
     .join(', ');
   return `${PEOPLE_EMOJI} ${names} · ${t.rounds}
 
-Players guess in order, ${MAX_GUESSES} max guesses, faster solution gives more points!`;
+Players guess in order — ${length}-letter words, ${tries} tries, faster solves earn more points!`;
 }
 
-function lobbyTextPlain(t: TournamentRow): string {
+function lobbyTextPlain(t: TournamentRow, tries: number, length: number): string {
   const names = t.players.map((p) => p.userName).join(', ');
   return `🏆 Tournament — ${t.rounds} round${t.rounds > 1 ? 's' : ''}
 Players (${t.players.length}): ${names}
 
-Players guess in order, ${MAX_GUESSES} max guesses, faster solution gives more points!`;
+Players guess in order — ${length}-letter words, ${tries} tries, faster solves earn more points!`;
 }
 
 /** Colored buttons with custom emoji icons — not in grammY's types yet, so shaped by hand. */
@@ -204,7 +205,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
         }
 
         if (svc.settings(chatId).dailyTime !== hhmm) continue;
-        const res = svc.startDaily(chatId, todayStr());
+        const res = await svc.startDaily(chatId, todayStr());
         if (res === 'done' || res === 'busy' || !res.created) continue;
         await sendBoard(
           bot.api,
@@ -269,24 +270,32 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
   }
 
   /** Pretty lobby (styled buttons + custom emoji); falls back to the plain version if rejected. */
+  function lobbyParams(chatId: number): { tries: number; length: number } {
+    const s = svc.settings(chatId);
+    const length = effectiveLength(s);
+    return { tries: effectiveTries(s, length), length };
+  }
+
   async function sendLobby(ctx: Context, t: TournamentRow): Promise<void> {
+    const { tries, length } = lobbyParams(t.chat_id);
     try {
-      await ctx.reply(lobbyTextHtml(t), { parse_mode: 'HTML', reply_markup: lobbyKeyboardStyled(t) });
+      await ctx.reply(lobbyTextHtml(t, tries, length), { parse_mode: 'HTML', reply_markup: lobbyKeyboardStyled(t) });
     } catch {
-      await ctx.reply(lobbyTextPlain(t), { reply_markup: lobbyKeyboardPlain(t) });
+      await ctx.reply(lobbyTextPlain(t, tries, length), { reply_markup: lobbyKeyboardPlain(t) });
     }
   }
 
   async function editLobby(ctx: Context, t: TournamentRow, started = false): Promise<void> {
     const suffix = started ? '\n\n✅ Started!' : '';
+    const { tries, length } = lobbyParams(t.chat_id);
     try {
-      await ctx.editMessageText(lobbyTextHtml(t) + suffix, {
+      await ctx.editMessageText(lobbyTextHtml(t, tries, length) + suffix, {
         parse_mode: 'HTML',
         reply_markup: started ? undefined : lobbyKeyboardStyled(t),
       });
     } catch {
       await ctx
-        .editMessageText(lobbyTextPlain(t) + suffix, { reply_markup: started ? undefined : lobbyKeyboardPlain(t) })
+        .editMessageText(lobbyTextPlain(t, tries, length) + suffix, { reply_markup: started ? undefined : lobbyKeyboardPlain(t) })
         .catch(() => {});
     }
   }
@@ -327,7 +336,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     if (!game) return false;
     const s = svc.settings(chatId);
     const hint = s.bareWord ? 'Type any 5-letter word to guess.' : 'Guess with /guess WORD.';
-    await sendBoard(api, chatId, game, `🎮 New game! I picked a 5-letter word — you have ${MAX_GUESSES} tries. ${hint}`);
+    await sendBoard(api, chatId, game, `🎮 New game! I picked a ${game.answer.length}-letter word — you have ${game.max_guesses} tries. ${hint}`);
     return true;
   }
 
@@ -376,6 +385,11 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
         return;
       case 'not_a_word':
         await ctx.reply(withFails(`🤔 "${out.word.toUpperCase()}" is not in my dictionary.`, out.failInfo));
+        return;
+      case 'wrong_length':
+        await ctx.reply(
+          withFails(`📏 The word has ${out.expected} letters — ${out.word.toUpperCase()} has ${out.word.length}.`, out.failInfo)
+        );
         return;
       case 'already_guessed': {
         const game = svc.activeGame(chatId)!;
@@ -459,7 +473,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       if (bothDone) {
         const winner = svc.duelWinner(d);
         const describe = (p: typeof d.challenger) =>
-          p.solved ? `${p.userName}: solved in ${p.guesses}/${MAX_GUESSES} (${humanMs(p.ms!)})` : `${p.userName}: failed`;
+          p.solved ? `${p.userName}: solved in ${p.guesses} ${p.guesses === 1 ? 'guess' : 'guesses'} (${humanMs(p.ms!)})` : `${p.userName}: failed`;
         const verdict =
           winner === 'draw' ? "🤝 It's a draw!" : `👑 ${(winner as { userName: string }).userName} wins the duel!`;
         const summary = `⚔️ Duel finished! The word was ${d.answer.toUpperCase()}.\n\n${describe(d.challenger)}\n${describe(d.opponent!)}\n\n${verdict}`;
@@ -497,7 +511,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       if (res === 'full') return void (await ctx.reply('This duel already has two players.'));
       if (res === 'already_playing') return void (await ctx.reply('You already played your board for this duel.'));
       if (res === 'own_game_running') return void (await ctx.reply('Finish your current game here first (/giveup to abandon it).'));
-      await ctx.reply('⚔️ Duel on! Same word as your opponent, 6 tries. Just type your 5-letter guesses.');
+      await ctx.reply(`⚔️ Duel on! Same ${res.game.answer.length}-letter word as your opponent, ${res.game.max_guesses} tries. Just type your guesses.`);
       await sendBoard(ctx.api, ctx.chat.id, res.game, 'Your duel board:');
       return;
     }
@@ -558,7 +572,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       if (t && t.status === 'joining') return void (await sendLobby(ctx, t));
       return void (await ctx.reply('No active game. Send /play to start one!'));
     }
-    let caption = `Current board — ${game.guesses.length}/${MAX_GUESSES} guesses used.`;
+    let caption = `Current board — ${game.guesses.length}/${maxGuessesFor(game)} guesses used.`;
     if (t && t.status === 'active') {
       const current = roundOrder(t.players, t.current_round)[t.turn_idx % t.players.length];
       caption += `\n\n🏆 Round ${t.current_round}/${t.rounds} — ${current.userName}'s turn.\nStandings:\n${standingsText(t)}`;
@@ -727,7 +741,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       return void (await ctx.reply('Usage: /daily — play today · /daily 09:00 — auto-post time · /daily off'));
     }
 
-    const res = svc.startDaily(chatId, todayStr());
+    const res = await svc.startDaily(chatId, todayStr());
     if (res === 'busy') {
       await offerDisband(ctx, 'daily');
       return;
@@ -738,7 +752,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     }
     const caption = res.created
       ? `☀️ Daily puzzle — ${todayStr()}. Same word for everyone today, 6 tries. Streaks are on the line!`
-      : `☀️ Today's daily — ${res.game.guesses.length}/${MAX_GUESSES} guesses used.`;
+      : `☀️ Today's daily — ${res.game.guesses.length}/${maxGuessesFor(res.game)} guesses used.`;
     await sendBoard(ctx.api, chatId, res.game, caption);
   });
 
@@ -746,6 +760,37 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const chatId = ctx.chat.id;
     const args = (ctx.match ?? '').trim();
     if (args) {
+      const lenMatch = args.match(/^length\s+(\d+)$/i);
+      if (lenMatch) {
+        const len = parseInt(lenMatch[1], 10);
+        const s = svc.settings(chatId);
+        const lengths = availableLengths(s.language);
+        if (!lengths.includes(len)) {
+          return void (await ctx.reply(`That length is not playable in ${LANGUAGES[s.language]?.label ?? s.language}. Available: ${lengths.join(', ')}`));
+        }
+        s.wordLength = len;
+        svc.saveSettings(chatId, s);
+        return void (await ctx.reply(
+          `✅ New games use ${len}-letter words with ${effectiveTries(s, len)} tries.\nAdjust tries for this length with /settings tries N (current default: ${len + 1}). The daily puzzle stays classic 5×6.`
+        ));
+      }
+      const triesMatch = args.match(/^tries\s+(\d+|default)$/i);
+      if (triesMatch) {
+        const s = svc.settings(chatId);
+        const len = effectiveLength(s);
+        if (triesMatch[1].toLowerCase() === 'default') {
+          delete s.triesByLength[String(len)];
+          svc.saveSettings(chatId, s);
+          return void (await ctx.reply(`✅ ${len}-letter games are back to the default ${len + 1} tries.`));
+        }
+        const n = parseInt(triesMatch[1], 10);
+        if (n < 1 || n > MAX_TRIES) {
+          return void (await ctx.reply(`Tries must be between 1 and ${MAX_TRIES}.`));
+        }
+        s.triesByLength[String(len)] = n;
+        svc.saveSettings(chatId, s);
+        return void (await ctx.reply(`✅ ${len}-letter games now give ${n} ${n === 1 ? 'try' : 'tries'} (default would be ${len + 1}).`));
+      }
       const toggle = args.match(/^(cleanup|hints|pings|breakdown)\s+(on|off)$/i);
       if (toggle) {
         const key = toggle[1].toLowerCase() as 'cleanup' | 'hints' | 'pings' | 'breakdown';
@@ -788,7 +833,10 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
         const s = svc.settings(chatId);
         s.language = code;
         svc.saveSettings(chatId, s);
-        return void (await ctx.reply(`${LANGUAGES[code].label} — new games here use the ${code.toUpperCase()} word list.`));
+        const note = availableLengths(code).includes(s.wordLength)
+          ? ''
+          : `\n(Word length ${s.wordLength} is not available in this language — games fall back to 5 letters.)`;
+        return void (await ctx.reply(`${LANGUAGES[code].label} — new games here use the ${code.toUpperCase()} word list.${note}`));
       }
       const fails = args.match(/^fails?\s+(\d+|off|unlimited)$/i);
       if (fails) {
@@ -862,7 +910,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const d = svc.createDuel(ctx.chat.id, user);
     const link = `https://t.me/${ctx.me.username}?start=duel_${d.id}`;
     await ctx.reply(
-      `⚔️ ${user.name} challenges the chat to a duel!\n\nSame secret word for both players, ${MAX_GUESSES} tries each in a private chat with me. Fewest guesses wins; speed breaks ties.\n\nFirst person to tap becomes the opponent. ${user.name}, tap too to play your board!`,
+      `⚔️ ${user.name} challenges the chat to a duel!\n\nSame secret ${lobbyParams(ctx.chat.id).length}-letter word for both players, ${lobbyParams(ctx.chat.id).tries} tries each in a private chat with me. Fewest guesses wins; speed breaks ties.\n\nFirst person to tap becomes the opponent. ${user.name}, tap too to play your board!`,
       { reply_markup: new InlineKeyboard().url('⚔️ Play the duel', link) }
     );
   });
@@ -906,7 +954,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     if (action === 'play') {
       await startNewGameFlow(ctx.api, chatId);
     } else if (action === 'daily') {
-      const r = svc.startDaily(chatId, todayStr());
+      const r = await svc.startDaily(chatId, todayStr());
       if (r === 'done') {
         await ctx.api.sendMessage(chatId, "Today's daily was already finished here.").catch(() => {});
       } else if (r !== 'busy') {
@@ -970,6 +1018,10 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     if (!looksLikeGuess(text)) return;
     const isPrivate = ctx.chat.type === 'private';
     if (!isPrivate && !svc.settings(ctx.chat.id).bareWord) return;
+    // a bare word only counts as a guess when it matches the running game's
+    // length — anything else is just conversation, not a failed guess
+    const game = svc.activeGame(ctx.chat.id);
+    if (!game || text.length !== game.answer.length) return;
     await handleGuess(ctx, text, { silentNoGame: true });
   });
 }

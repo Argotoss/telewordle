@@ -1,6 +1,6 @@
 # telewordle
 
-A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat plays together — with image/sticker/text boards, a daily puzzle, tournaments with turn timers, duels, leaderboards, multiple languages (English & Russian), hard/super-hard difficulty, and a "creativity mode" that bans recently used words.
+A Wordle bot for Telegram groups. Random words from 3 to 10 letters (tries = length + 1, configurable), the whole chat plays together — with image/sticker/text boards, a daily puzzle, tournaments with turn timers, duels, leaderboards, multiple languages (English & Russian), hard/super-hard difficulty, and a "creativity mode" that bans recently used words.
 
 ## Quick start
 
@@ -18,14 +18,14 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
 
 | Command | What it does |
 |---|---|
-| `/play` | Start a new game (random word, 6 tries, shared board) |
-| `/daily` | Today's daily puzzle — same word everywhere, daily streaks; `/daily 09:00` auto-posts it, `/daily off` stops |
+| `/play` | Start a new game (random word at the chat's configured length, shared board) |
+| `/daily` | The official Wordle of the day (always classic 5 letters / 6 tries; English chats get the real NYT word, with an offline fallback) — daily streaks; `/daily 09:00` auto-posts it, `/daily off` stops |
 | `/top` | Chat leaderboard |
 | `/guess WORD` | Submit a guess (`/w WORD` works too) |
-| `/hint` | Reveal one letter of the word — costs one of the six tries |
+| `/hint` | Reveal one letter of the word — costs one try |
 | `/history` | Recent games: word, result, who solved it |
 | `/vs` | Head-to-head rivalry card rendered as an image — avatars, VS header, stat pills with the leader in green (reply to someone or `/vs NAME`) |
-| `/define` | Definition of the last answer — AI-written via the Claude API when `ANTHROPIC_API_KEY` is set, otherwise dictionaryapi.dev (en) / ru.wiktionary (ru) |
+| `/define` | Definition of the last answer — AI-written (DeepSeek via `OPENROUTER_API_KEY`, or Claude via `ANTHROPIC_API_KEY`), with free dictionary fallback |
 | `/board` | Show the current board (and tournament standings) |
 | `/giveup` | Abandon the game and reveal the word |
 | `/stats` | Your stats in this chat |
@@ -38,7 +38,7 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
 
 ## Settings (`/settings`, per chat)
 
-- **Bare-word guessing** (default **off**) — when on, any message that is a valid 5-letter word counts as a guess. Unknown words get a "not in my dictionary" notice.
+- **Bare-word guessing** (default **off**) — when on, any message that is a valid word of the running game's length counts as a guess. Unknown words get a "not in my dictionary" notice.
 - **Board style** (default **image**) — classic Wordle picture (board + letter keyboard), big **sticker** output (512px WebP board + keyboard stickers), or pure text:
   ```
   T R A C E
@@ -57,6 +57,7 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
 - **Post-game breakdown** (default **on**) — after each normal/daily game, a WordleBot-style analysis shows how much each guess narrowed the possible answers and who got lucky, plus a dictionary definition of the answer. `/settings breakdown off`.
 - **Names on the board** — when several people play one board, each row shows who guessed it (all render modes).
 - **Reactions** — the bot reacts 🎉 to the winning guess and 😱 to a failed sixth attempt.
+- **Word length** (default **5**) — `/settings length 3`-`10` picks the word size for new games; tries default to length + 1 and can be overridden per length with `/settings tries N` (or `tries default`). Running games keep the budget they started with. The daily puzzle is exempt and stays classic 5×6.
 - **Language** (default **English**) — `/settings lang ru` switches new games to the Russian word list (ЙЦУКЕН keyboard included; ё plays as е). Adding a language is one entry in `src/engine/languages.ts` plus two word-list files under `data/words/<code>/`.
 - **Creativity mode** (default **on, 1-hour window**) — words used recently in this chat (guesses *and* answers) are banned from being guessed and from being picked as the answer. Configure as a time window or a word count:
   ```
@@ -70,7 +71,7 @@ If a game or tournament is blocking the chat, `/play`, `/daily`, and `/tournamen
 
 ## Tournaments
 
-`/tournament 3` opens a lobby (join or quit via buttons, creator presses Start). Players guess strictly in turn order, and the order rotates every round so nobody is always first. Solving the word scores points by how early it fell: guess #1 = 6 pts … guess #6 = 1 pt. After the last round the bot posts the scoreboard and the winner.
+`/tournament 3` opens a lobby (join or quit via buttons, creator presses Start). Players guess strictly in turn order, and the order rotates every round so nobody is always first. Solving the word scores points by how early it fell: guess #1 earns the full try budget, the last try earns 1 pt. After the last round the bot posts the scoreboard and the winner.
 
 ## Duels
 
@@ -82,7 +83,7 @@ Per user, per chat: games played/won, win rate, winning guesses, current/best st
 
 ## Word lists
 
-`data/answers.txt` (2,314 curated answers) and `data/allowed.txt` (10,656 additional accepted guesses) — the classic Wordle lists.
+`data/words/<lang>/answers.txt` (frequency-curated answers) and `allowed.txt` (full accepted dictionaries), covering lengths 3-10 per language. The classic 5-letter Wordle lists are preserved verbatim inside them.
 
 ## Development
 

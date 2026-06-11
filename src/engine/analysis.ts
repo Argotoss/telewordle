@@ -76,7 +76,7 @@ function skillGrade(pool: string[], playedExpected: number): GuessSkill | null {
  *  - luck: did the answer land kinder or harsher than the typical (median) outcome?
  */
 export function analyzeGame(game: GameRow): GuessAnalysis[] {
-  let candidates = wordList(game.lang).answers;
+  let candidates = wordList(game.lang, game.answer.length).answers;
   const out: GuessAnalysis[] = [];
 
   for (const g of game.guesses) {

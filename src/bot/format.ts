@@ -3,13 +3,13 @@ import type { GuessAnalysis } from '../engine/analysis.js';
 import type { HardModeViolation } from '../engine/hardmode.js';
 import { getLanguage, LANGUAGES } from '../engine/languages.js';
 import { scoreGuess, type TileStatus } from '../engine/score.js';
-import { MAX_GUESSES, maxGuessesFor, roundOrder } from '../game/service.js';
+import { MAX_GUESSES, effectiveLength, effectiveTries, maxGuessesFor, roundOrder } from '../game/service.js';
 import { formatTileLetter, type EmojiPackConfig, type TileColor } from '../render/emoji-pack.js';
 
 export const HELP_TEXT = `🟩 Wordle Bot — How to Play
 
-/play starts a game with a random 5-letter word.
-Guess it in 6 tries — everyone in the chat plays together!
+/play starts a game with a random word (3-10 letters, you choose in /settings; tries = length + 1).
+Everyone in the chat plays together!
 
 🟩 Green  — right letter, right spot
 🟨 Yellow — right letter, wrong spot
@@ -17,7 +17,7 @@ Guess it in 6 tries — everyone in the chat plays together!
 
 Commands
 /play — start a new game
-/daily — today's daily puzzle (same word everywhere!)
+/daily — the official Wordle of the day (classic 5×6, same word everywhere!)
 /guess WORD — submit a guess (/w works too)
 /hint — reveal a letter, costs one try
 /board — show the current board
@@ -89,9 +89,10 @@ const DIFFICULTY_NOTE: Record<Difficulty, string> = {
 export function settingsText(s: ChatSettings): string {
   return `⚙️ Settings
 
-• Bare words: ${s.bareWord ? 'ON — plain 5-letter words count' : 'OFF — guess with /guess WORD'}
+• Bare words: ${s.bareWord ? 'ON — typed words count as guesses' : 'OFF — guess with /guess WORD'}
 • Board: ${RENDER_LABEL[s.render]}
 • Language: ${getLanguage(s.language).label} · /settings lang ${Object.keys(LANGUAGES).filter((c) => c !== s.language).join(' | ')}
+• Word length: ${effectiveLength(s)} letters, ${effectiveTries(s, effectiveLength(s))} tries${s.triesByLength[String(effectiveLength(s))] !== undefined ? ' (custom)' : ''} · /settings length 3-10 | tries N | tries default
 • Difficulty: ${DIFFICULTY_LABEL[s.difficulty]} — ${DIFFICULTY_NOTE[s.difficulty]}
 • Creativity: ${describeCreativity(s)} · /settings creativity 30m | 15w
 • Max fails: ${s.maxFails > 0 ? `${s.maxFails} per player` : 'unlimited'} · /settings fails 5 | off
@@ -143,7 +144,7 @@ export function parseCreativityValue(input: string): { seconds: number } | { cou
   return null;
 }
 
-const ROW_NUM = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'];
+const ROW_NUM = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟', '1️⃣1️⃣', '1️⃣2️⃣'];
 
 export function statsText(s: StatsRow, displayName: string): string {
   const pct = (a: number, b: number) => (b ? Math.round((100 * a) / b) : 0);
@@ -156,14 +157,16 @@ export function statsText(s: StatsRow, displayName: string): string {
   lines.push(`🔥 Streak · ${s.current_streak} now, ${s.best_streak} best`);
   if (s.fastest_ms !== null) lines.push(`⚡ Fastest · ${humanMs(s.fastest_ms)}`);
   if (s.guesses_total > 0) {
-    lines.push(`✍️ Letters · ${s.guesses_total} guesses, ${pct(s.greens, s.guesses_total * 5)}% 🟩 ${pct(s.yellows, s.guesses_total * 5)}% 🟨`);
+    lines.push(`✍️ Letters · ${s.guesses_total} guesses, ${s.greens} 🟩 ${s.yellows} 🟨`);
   }
 
-  const dist = [s.dist1, s.dist2, s.dist3, s.dist4, s.dist5, s.dist6];
+  const dist = [s.dist1, s.dist2, s.dist3, s.dist4, s.dist5, s.dist6, s.dist7, s.dist8, s.dist9, s.dist10, s.dist11, s.dist12];
   if (dist.some((n) => n > 0)) {
     const maxDist = Math.max(...dist);
+    // always show 1-6; longer buckets appear only once something landed there
+    const lastShown = Math.max(6, dist.reduce((acc, n, i) => (n > 0 ? i + 1 : acc), 0));
     lines.push('', 'Winning guesses');
-    dist.forEach((n, i) => {
+    dist.slice(0, lastShown).forEach((n, i) => {
       const bar = n > 0 ? '▰'.repeat(Math.max(1, Math.round((n / maxDist) * 8))) + ` ${n}` : '·';
       lines.push(`${ROW_NUM[i]} ${bar}`);
     });

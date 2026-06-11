@@ -56,22 +56,22 @@ describe('daily puzzle', () => {
     expect(dailyAnswer('2026-06-11', 'ru')).toMatch(/^[а-я]{5}$/);
   });
 
-  it('one per chat per day, with streak tracking', () => {
+  it('one per chat per day, with streak tracking', async () => {
     const day1 = '2026-06-10';
     const day2 = '2026-06-11';
 
-    const res = svc.startDaily(CHAT, day1);
+    const res = await svc.startDaily(CHAT, day1);
     if (res === 'busy' || res === 'done') throw new Error('expected a fresh daily');
     expect(res.created).toBe(true);
     expect(res.game.answer).toBe(dailyAnswer(day1));
 
     // solving it records daily stats and finishes the day
     svc.submitGuess(CHAT, A, res.game.answer);
-    expect(svc.startDaily(CHAT, day1)).toBe('done');
+    expect(await svc.startDaily(CHAT, day1)).toBe('done');
     expect(svc.statsFor(CHAT, A.id).daily_streak).toBe(1);
 
     // next day solved too → streak grows
-    const res2 = svc.startDaily(CHAT, day2);
+    const res2 = await svc.startDaily(CHAT, day2);
     if (res2 === 'busy' || res2 === 'done') throw new Error('expected a fresh daily');
     svc.submitGuess(CHAT, A, res2.game.answer);
     const stats = svc.statsFor(CHAT, A.id);
@@ -80,8 +80,8 @@ describe('daily puzzle', () => {
     expect(stats.daily_best).toBe(2);
   });
 
-  it('share grid has no letters in it', () => {
-    const res = svc.startDaily(CHAT, '2026-06-11');
+  it('share grid has no letters in it', async () => {
+    const res = await svc.startDaily(CHAT, '2026-06-11');
     if (res === 'busy' || res === 'done') throw new Error('expected a fresh daily');
     svc.submitGuess(CHAT, A, res.game.answer);
     const text = dailyShareText(svc.dailyGame(CHAT, '2026-06-11')!);
