@@ -1,5 +1,11 @@
 # telewordle — project notes
 
+> **Discord Activity project:** the approved end-to-end plan lives in
+> `docs/discord-activity-plan.md`. Read it before any Activity work — it defines the
+> architecture, milestones, and the mandatory Testing Doctrine (Playwright + the
+> screenshot review ritual). Daniel cannot create the Discord app or test during
+> development; everything must be self-verified per that doctrine.
+
 Telegram Wordle bot for a 4-person friend group chat. Owner: Daniel (@Argotoss).
 There is a fork by his friend Artem (https://github.com/ExposedCat/telewordle) that
 repeatedly out-polished us on UI/UX. Treat it as a design rival: before building any
