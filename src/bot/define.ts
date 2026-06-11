@@ -1,16 +1,19 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { ANTHROPIC_API_KEY } from '../config.js';
+import { ANTHROPIC_API_KEY, OPENROUTER_API_KEY, OPENROUTER_MODEL } from '../config.js';
+
+const DEFINE_SYSTEM_PROMPT =
+  'You write one-sentence dictionary definitions for a word game. Reply with only the definition sentence — no preamble, no quotes, no markdown. Write the definition in the same language as the word.';
 
 /**
  * Definition of the answer word, best source first:
- *  1. Claude (only when ANTHROPIC_API_KEY is set) — natural one-sentence
- *     explanations in the game's language, works for every word incl. slang
- *  2. dictionaryapi.dev (en) / ru.wiktionary.org (ru) — free, keyless
+ *  1. DeepSeek v4 via OpenRouter (OPENROUTER_API_KEY) — smart, near-free
+ *  2. Claude (ANTHROPIC_API_KEY) — fallback AI source
+ *  3. dictionaryapi.dev (en) / ru.wiktionary.org (ru) — free, keyless
  * Everything is best-effort: any failure falls through, and a final null
  * just means the caller skips the 📖 line.
  */
 export async function fetchDefinition(word: string, lang: string): Promise<string | null> {
-  const ai = await fetchClaudeDefinition(word, lang);
+  const ai = (await fetchOpenRouterDefinition(word, lang)) ?? (await fetchClaudeDefinition(word, lang));
   if (ai) return ai;
   if (lang === 'ru') return fetchRussianDefinition(word);
   if (lang !== 'en') return null;
@@ -30,6 +33,47 @@ export async function fetchDefinition(word: string, lang: string): Promise<strin
   }
 }
 
+function defineUserPrompt(word: string, lang: string): string {
+  const langName = lang === 'ru' ? 'Russian' : 'English';
+  return `Define the ${langName} word "${word}".`;
+}
+
+function formatAiDefinition(word: string, raw: string | undefined | null): string | null {
+  const text = (raw ?? '').replace(/\s+/g, ' ').replace(/^["'«»]+|["'«»]+$/g, '').trim();
+  if (!text) return null;
+  return `📖 ${word.toUpperCase()} — ${text.slice(0, 300)}`;
+}
+
+async function fetchOpenRouterDefinition(word: string, lang: string): Promise<string | null> {
+  if (!OPENROUTER_API_KEY) return null;
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        max_tokens: 300,
+        // a one-sentence definition needs no chain-of-thought; without this,
+        // v4-pro burns the whole token budget on reasoning and returns nothing
+        reasoning: { enabled: false },
+        messages: [
+          { role: 'system', content: DEFINE_SYSTEM_PROMPT },
+          { role: 'user', content: defineUserPrompt(word, lang) },
+        ],
+      }),
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as any;
+    return formatAiDefinition(word, data?.choices?.[0]?.message?.content);
+  } catch {
+    return null;
+  }
+}
+
 let claude: Anthropic | null = null;
 
 function claudeClient(): Anthropic | null {
@@ -42,22 +86,17 @@ async function fetchClaudeDefinition(word: string, lang: string): Promise<string
   const client = claudeClient();
   if (!client) return null;
   try {
-    const langName = lang === 'ru' ? 'Russian' : 'English';
     const response = await client.messages.create({
       model: 'claude-opus-4-8',
       max_tokens: 200,
-      system:
-        'You write one-sentence dictionary definitions for a word game. Reply with only the definition sentence — no preamble, no quotes, no markdown. Write the definition in the same language as the word.',
-      messages: [{ role: 'user', content: `Define the ${langName} word "${word}".` }],
+      system: DEFINE_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: defineUserPrompt(word, lang) }],
     });
     const text = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
       .map((b) => b.text)
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!text) return null;
-    return `📖 ${word.toUpperCase()} — ${text.slice(0, 300)}`;
+      .join(' ');
+    return formatAiDefinition(word, text);
   } catch {
     return null;
   }
