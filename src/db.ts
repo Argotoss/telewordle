@@ -168,6 +168,9 @@ export interface StatsRow {
   daily_streak: number;
   daily_best: number;
   last_daily: string | null;
+  /** lifetime play quality: sum of per-guess skill percentiles and how many were scored */
+  quality_sum: number;
+  quality_count: number;
 }
 
 export function openDb(path: string): Database.Database {
@@ -259,7 +262,13 @@ export function openDb(path: string): Database.Database {
       daily_streak INTEGER NOT NULL DEFAULT 0,
       daily_best INTEGER NOT NULL DEFAULT 0,
       last_daily TEXT,
+      quality_sum INTEGER NOT NULL DEFAULT 0,
+      quality_count INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (chat_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS board_messages (
+      chat_id INTEGER PRIMARY KEY,
+      message_ids TEXT NOT NULL DEFAULT '[]'
     );
   `);
   // migrations for databases created before the max-fails features
@@ -295,6 +304,10 @@ export function openDb(path: string): Database.Database {
     db.exec('ALTER TABLE stats ADD COLUMN daily_streak INTEGER NOT NULL DEFAULT 0');
     db.exec('ALTER TABLE stats ADD COLUMN daily_best INTEGER NOT NULL DEFAULT 0');
     db.exec('ALTER TABLE stats ADD COLUMN last_daily TEXT');
+  }
+  if (!sCols.some((c) => c.name === 'quality_sum')) {
+    db.exec('ALTER TABLE stats ADD COLUMN quality_sum INTEGER NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE stats ADD COLUMN quality_count INTEGER NOT NULL DEFAULT 0');
   }
   return db;
 }
@@ -532,6 +545,28 @@ export function updateDuel(db: Database.Database, d: DuelRow): void {
 }
 
 // ---------- stats ----------
+
+// ---------- board message tracking (cleanup that survives restarts) ----------
+
+export function getBoardMessageIds(db: Database.Database, chatId: number): number[] {
+  const row = db.prepare('SELECT message_ids FROM board_messages WHERE chat_id = ?').get(chatId) as
+    | { message_ids: string }
+    | undefined;
+  if (!row) return [];
+  const parsed = JSON.parse(row.message_ids);
+  return Array.isArray(parsed) ? parsed.filter((id): id is number => Number.isInteger(id)) : [];
+}
+
+export function saveBoardMessageIds(db: Database.Database, chatId: number, ids: number[]): void {
+  if (!ids.length) {
+    db.prepare('DELETE FROM board_messages WHERE chat_id = ?').run(chatId);
+    return;
+  }
+  db.prepare(
+    `INSERT INTO board_messages (chat_id, message_ids) VALUES (?, ?)
+     ON CONFLICT(chat_id) DO UPDATE SET message_ids = excluded.message_ids`
+  ).run(chatId, JSON.stringify(ids));
+}
 
 /** Everyone with at least one game in this chat, for the leaderboard. */
 export function getChatStats(db: Database.Database, chatId: number): StatsRow[] {

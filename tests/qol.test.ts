@@ -138,6 +138,37 @@ describe('board names', () => {
   });
 });
 
+describe('lifetime quality score', () => {
+  it('rates strong openers high and weak ones low, and persists per player', async () => {
+    const { guessSkillScore } = await import('../src/engine/analysis.js');
+    expect(guessSkillScore('water', [], 'crane', 'en')!).toBeGreaterThanOrEqual(90);
+    expect(guessSkillScore('abbey', [], 'mamma', 'en')!).toBeLessThanOrEqual(20);
+
+    db.prepare('UPDATE games SET answer = ? WHERE id = ?').run('water', svc.startGame(CHAT)!.id);
+    svc.submitGuess(CHAT, A, 'crane');
+    svc.submitGuess(CHAT, A, 'water');
+    const s = getStats(db, CHAT, A.id);
+    expect(s.quality_count).toBeGreaterThan(0);
+    expect(s.quality_sum).toBeGreaterThan(0);
+  });
+
+  it('skips scoring when the pool is too small to mean anything', async () => {
+    const { guessSkillScore } = await import('../src/engine/analysis.js');
+    // after enough constraints the candidate pool collapses below 4
+    expect(guessSkillScore('water', ['wafer', 'wager', 'waver'], 'water', 'en')).toBeNull();
+  });
+});
+
+describe('board message persistence', () => {
+  it('survives restarts via the DB', async () => {
+    const { getBoardMessageIds, saveBoardMessageIds } = await import('../src/db.js');
+    saveBoardMessageIds(db, CHAT, [11, 22]);
+    expect(getBoardMessageIds(db, CHAT)).toEqual([11, 22]);
+    saveBoardMessageIds(db, CHAT, []);
+    expect(getBoardMessageIds(db, CHAT)).toEqual([]);
+  });
+});
+
 describe('new settings defaults', () => {
   it('cleanup, hints, pings, breakdown all default on', () => {
     const s = svc.settings(CHAT);

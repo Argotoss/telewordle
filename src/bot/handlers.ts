@@ -6,8 +6,10 @@ import {
   activeTournamentChats,
   allChatIds,
   finishedDuels,
+  getBoardMessageIds,
   getChatStats,
   recentFinishedGames,
+  saveBoardMessageIds,
 } from '../db.js';
 import { analyzeGame } from '../engine/analysis.js';
 import { LANGUAGES, looksLikeGuess } from '../engine/languages.js';
@@ -220,13 +222,19 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
   }, 60_000);
 
   // Board cleanup: remember the bot's last board-related messages per chat so
-  // they can be deleted when a fresh board is posted. The final board of a
+  // they can be deleted when a fresh board is posted. Stored in the DB so a
+  // bot restart never leaves stale boards behind. The final board of a
   // finished game is never cleaned up — it stays as the game's record.
-  const boardMsgs = new Map<number, number[]>();
+  const boardMsgs = {
+    get: (chatId: number): number[] => getBoardMessageIds(db, chatId),
+    set: (chatId: number, ids: number[]): void => saveBoardMessageIds(db, chatId, ids),
+    delete: (chatId: number): void => saveBoardMessageIds(db, chatId, []),
+    push: (chatId: number, id: number): void => saveBoardMessageIds(db, chatId, [...getBoardMessageIds(db, chatId), id]),
+  };
 
   async function cleanupOldBoards(api: Api, chatId: number): Promise<void> {
     if (!svc.settings(chatId).cleanup) return;
-    for (const id of boardMsgs.get(chatId) ?? []) {
+    for (const id of boardMsgs.get(chatId)) {
       await api.deleteMessage(chatId, id).catch(() => {});
     }
     boardMsgs.delete(chatId);
@@ -263,7 +271,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
             { parse_mode: 'HTML' }
           )
         : await bot.api.sendMessage(chatId, `${prefix} ${player.userName}!`);
-      boardMsgs.get(chatId)?.push(msg.message_id);
+      boardMsgs.push(chatId, msg.message_id);
     } catch {
       // pings are cosmetic; never fail the game flow over them
     }
@@ -697,6 +705,17 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
         winner: (pa ?? -1) > (pb ?? -1) ? 'a' : (pb ?? -1) > (pa ?? -1) ? 'b' : 'tie',
       },
       num('Best streak', sa.best_streak, sb.best_streak),
+      {
+        label: 'Quality',
+        a: sa.quality_count ? String(Math.round(sa.quality_sum / sa.quality_count)) : 'n/a',
+        b: sb.quality_count ? String(Math.round(sb.quality_sum / sb.quality_count)) : 'n/a',
+        winner:
+          (sa.quality_count ? sa.quality_sum / sa.quality_count : -1) > (sb.quality_count ? sb.quality_sum / sb.quality_count : -1)
+            ? 'a'
+            : (sb.quality_count ? sb.quality_sum / sb.quality_count : -1) > (sa.quality_count ? sa.quality_sum / sa.quality_count : -1)
+              ? 'b'
+              : 'tie',
+      },
       num('Tournament pts', sa.tournament_points, sb.tournament_points),
       num('Duels won', record.aWins, record.bWins),
     ];

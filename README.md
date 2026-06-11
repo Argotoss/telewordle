@@ -79,7 +79,7 @@ If a game or tournament is blocking the chat, `/play`, `/daily`, and `/tournamen
 
 ## Stats
 
-Per user, per chat: games played/won, win rate, winning guesses, current/best streak, fastest solve, total guesses, green/yellow letter accuracy, winning-guess distribution, tournament games/wins/points, duel record.
+Per user, per chat: games played/won, win rate, winning guesses, current/best streak, fastest solve, total guesses, green/yellow counts, a lifetime Quality score (each guess is ranked against alternative words from the same pool — pure skill, luck excluded), winning-guess distribution, tournament games/wins/points, duel record.
 
 ## Word lists
 

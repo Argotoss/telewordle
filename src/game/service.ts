@@ -24,6 +24,7 @@ import {
   updateGame,
   updateTournament,
 } from '../db.js';
+import { guessSkillScore } from '../engine/analysis.js';
 import { hardModeViolation, type HardModeViolation } from '../engine/hardmode.js';
 import { getLanguage } from '../engine/languages.js';
 import { scoreGuess, TileStatus } from '../engine/score.js';
@@ -246,7 +247,8 @@ export class GameService {
       if (violation) return fail({ type: 'hard_mode_violation', word, violation, superHard });
     }
 
-    // accept the guess
+    // accept the guess (quality is judged against the pool BEFORE this guess lands)
+    const quality = isDuel ? null : guessSkillScore(game.answer, game.guesses.map((g) => g.word), word, game.lang);
     const entry: GuessEntry = { word, userId: user.id, userName: user.name, ts: Date.now() };
     game.guesses.push(entry);
     const score = scoreGuess(game.answer, word);
@@ -269,7 +271,7 @@ export class GameService {
     if (isDuel) {
       outcome.duel = this.applyDuelProgress(game, user, solved, lost, guessNumber);
     } else {
-      this.applyGuessStats(chatId, user, score);
+      this.applyGuessStats(chatId, user, score, quality);
       if (solved || lost) this.applyGameEndStats(chatId, game, solved, guessNumber);
       if ((solved || lost) && game.kind === 'daily' && game.daily_date) {
         const participants = new Map<number, string>();
@@ -679,11 +681,13 @@ export class GameService {
 
   // ---------- stats ----------
 
-  private applyGuessStats(chatId: number, user: UserRef, score: TileStatus[]): void {
+  private applyGuessStats(chatId: number, user: UserRef, score: TileStatus[], quality: number | null): void {
     bumpStats(this.db, chatId, user.id, user.name, {
       guesses_total: 1,
       greens: score.filter((s) => s === 'correct').length,
       yellows: score.filter((s) => s === 'present').length,
+      quality_sum: quality ?? 0,
+      quality_count: quality !== null ? 1 : 0,
     });
   }
 

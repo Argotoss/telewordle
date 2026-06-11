@@ -71,6 +71,31 @@ function skillGrade(pool: string[], playedExpected: number): GuessSkill | null {
 }
 
 /**
+ * Lifetime play-quality score for one guess: the percentile of its expected
+ * narrowing among sampled alternative words from the same candidate pool.
+ * 100 = better than every alternative, 50 = median, 0 = worst. Pure skill —
+ * computed from EXPECTED remaining, so a lucky bad guess still scores low.
+ * Returns null when the pool is too small for the score to mean anything.
+ */
+export function guessSkillScore(answer: string, prevGuesses: string[], word: string, lang: string): number | null {
+  let candidates = wordList(lang, answer.length).answers;
+  for (const prev of prevGuesses) {
+    const pattern = scoreGuess(answer, prev).join(',');
+    candidates = candidates.filter((c) => scoreGuess(c, prev).join(',') === pattern);
+  }
+  if (candidates.length <= 3) return null;
+  const played = expectedRemaining(patternGroups(candidates, word).groups, candidates.length);
+  const K = Math.min(40, candidates.length);
+  let better = 0;
+  for (let i = 0; i < K; i++) {
+    const alt = candidates[Math.floor((i * candidates.length) / K)];
+    const e = expectedRemaining(patternGroups(candidates, alt).groups, candidates.length);
+    if (e < played - 1e-9) better++;
+  }
+  return Math.round(100 * (1 - better / K));
+}
+
+/**
  * WordleBot-style breakdown with two independent axes per guess:
  *  - skill: was the word choice good, compared to what else you could have played?
  *  - luck: did the answer land kinder or harsher than the typical (median) outcome?

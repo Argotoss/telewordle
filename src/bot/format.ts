@@ -159,6 +159,10 @@ export function statsText(s: StatsRow, displayName: string): string {
   if (s.guesses_total > 0) {
     lines.push(`✍️ Letters · ${s.guesses_total} guesses, ${s.greens} 🟩 ${s.yellows} 🟨`);
   }
+  if (s.quality_count > 0) {
+    const q = Math.round(s.quality_sum / s.quality_count);
+    lines.push(`🧠 Quality · ${q}/100 — your words beat ${q}% of alternatives`);
+  }
 
   const dist = [s.dist1, s.dist2, s.dist3, s.dist4, s.dist5, s.dist6, s.dist7, s.dist8, s.dist9, s.dist10, s.dist11, s.dist12];
   if (dist.some((n) => n > 0)) {
@@ -199,6 +203,7 @@ export function topText(rows: StatsRow[]): string {
     const rank = medals[i] ?? ` ${i + 1}.`;
     const winRate = s.games_played ? Math.round((100 * s.games_won) / s.games_played) : 0;
     const bits = [`${s.solves} solve${s.solves === 1 ? '' : 's'}`, `${winRate}% wins`];
+    if (s.quality_count > 0) bits.push(`🧠${Math.round(s.quality_sum / s.quality_count)}`);
     if (s.current_streak > 1) bits.push(`🔥${s.current_streak}`);
     if (s.tournament_points > 0) bits.push(`🏆${s.tournament_points}`);
     return `${rank} ${s.name || 'Player'} — ${bits.join(' · ')}`;
@@ -252,6 +257,12 @@ export function vsText(
     line('🏆', 'Win rate', pct(a), pct(b), (n) => `${n}%`),
     line('🔥', 'Best streak', a.best_streak, b.best_streak),
   ];
+  const qa = a.quality_count ? Math.round(a.quality_sum / a.quality_count) : null;
+  const qb = b.quality_count ? Math.round(b.quality_sum / b.quality_count) : null;
+  if (qa !== null || qb !== null) {
+    const [ca, cb] = crown(qa ?? -1, qb ?? -1);
+    lines.push(`🧠 Quality — ${qa === null ? 'n/a' : qa}${ca} vs ${qb === null ? 'n/a' : qb}${cb}`);
+  }
   if (a.daily_played > 0 || b.daily_played > 0) lines.push(line('☀️', 'Daily best streak', a.daily_best, b.daily_best));
   if (a.tournament_points > 0 || b.tournament_points > 0) {
     lines.push(line('🏟', 'Tournament pts', a.tournament_points, b.tournament_points));
