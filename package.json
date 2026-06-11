@@ -11,7 +11,7 @@
     "test": "vitest run",
     "render:sample": "tsx scripts/render-sample.ts"
   },
-  "license": "GPL-3.0",
+  "license": "AGPL-3.0-only",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
     "@napi-rs/canvas": "^1.0.0",

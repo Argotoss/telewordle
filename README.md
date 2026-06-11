@@ -102,3 +102,7 @@ Stack: TypeScript, [grammY](https://grammy.dev) (long polling — no public URL 
 docker build -t telewordle .
 docker run -d --name telewordle -e BOT_TOKEN=123:abc -v telewordle-data:/data telewordle
 ```
+
+## License
+
+AGPL-3.0 — if you run a modified version of this bot for others (yes, including a Telegram bot), you must offer them your source. Portions contributed under GPL-3.0 remain under GPL-3.0, combined per GPLv3 §13.
