@@ -1,5 +1,6 @@
 import { createCanvas, type Canvas, type SKRSContext2D } from '@napi-rs/canvas';
 import { GameRow } from '../db.js';
+import { getLanguage } from '../engine/languages.js';
 import { keyboardStatus, scoreGuess, TileStatus } from '../engine/score.js';
 import { MAX_GUESSES } from '../game/service.js';
 
@@ -22,7 +23,16 @@ const PAD = 24;
 const KEY_W = 40;
 const KEY_H = 54;
 const KEY_GAP = 6;
-const KEY_ROWS = ['QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'];
+
+function keyRows(game: GameRow): string[] {
+  return getLanguage(game.lang).keyRows;
+}
+
+/** Key width that fits the longest keyboard row into the given width. */
+function fitKeyWidth(rows: string[], maxWidth: number): number {
+  const maxKeys = Math.max(...rows.map((r) => r.length));
+  return Math.min(KEY_W, Math.floor((maxWidth - (maxKeys - 1) * KEY_GAP) / maxKeys));
+}
 
 const FONT = 'sans-serif';
 
@@ -59,30 +69,32 @@ function drawBoard(ctx: SKRSContext2D, game: GameRow, left: number, top: number)
 }
 
 /** Full classic keyboard: every letter stays visible (absent = dark, unused = light). */
-function drawKeyboard(ctx: SKRSContext2D, game: GameRow, width: number, top: number): void {
+function drawKeyboard(ctx: SKRSContext2D, game: GameRow, width: number, top: number, keyW = KEY_W): void {
   const status = keyboardStatus(game.answer, game.guesses.map((g) => g.word));
-  KEY_ROWS.forEach((rowLetters, rowIdx) => {
-    const rowW = rowLetters.length * KEY_W + (rowLetters.length - 1) * KEY_GAP;
+  keyRows(game).forEach((rowLetters, rowIdx) => {
+    const rowW = rowLetters.length * keyW + (rowLetters.length - 1) * KEY_GAP;
     const startX = (width - rowW) / 2;
     const y = top + rowIdx * (KEY_H + KEY_GAP);
     for (let i = 0; i < rowLetters.length; i++) {
       const letter = rowLetters[i];
       const s = status.get(letter.toLowerCase()) ?? 'unused';
-      const x = startX + i * (KEY_W + KEY_GAP);
+      const x = startX + i * (keyW + KEY_GAP);
       ctx.fillStyle = s === 'unused' ? COLORS.keyUnused : COLORS[s];
-      roundRect(ctx, x, y, KEY_W, KEY_H, 5);
+      roundRect(ctx, x, y, keyW, KEY_H, 5);
       ctx.fill();
       ctx.fillStyle = COLORS.text;
-      ctx.font = `bold 20px ${FONT}`;
-      ctx.fillText(letter, x + KEY_W / 2, y + KEY_H / 2 + 1);
+      ctx.font = `bold ${Math.round(keyW / 2)}px ${FONT}`;
+      ctx.fillText(letter, x + keyW / 2, y + KEY_H / 2 + 1);
     }
   });
 }
 
 /** Classic single PNG: board with the keyboard underneath. */
 export function renderBoardImage(game: GameRow): Buffer {
-  const kbW = KEY_ROWS[0].length * KEY_W + (KEY_ROWS[0].length - 1) * KEY_GAP;
-  const kbH = KEY_ROWS.length * KEY_H + (KEY_ROWS.length - 1) * KEY_GAP;
+  const rows = keyRows(game);
+  const maxKeys = Math.max(...rows.map((r) => r.length));
+  const kbW = maxKeys * KEY_W + (maxKeys - 1) * KEY_GAP;
+  const kbH = rows.length * KEY_H + (rows.length - 1) * KEY_GAP;
   const width = Math.max(BOARD_W, kbW) + PAD * 2;
   const height = PAD + BOARD_H + 30 + kbH + PAD;
 
@@ -122,12 +134,14 @@ export function renderBoardSticker(game: GameRow): Buffer {
 
 /** Full keyboard as a 512px-wide WebP sticker. */
 export function renderKeyboardSticker(game: GameRow): Buffer {
-  const kbH = KEY_ROWS.length * KEY_H + (KEY_ROWS.length - 1) * KEY_GAP;
+  const rows = keyRows(game);
+  const keyW = fitKeyWidth(rows, STICKER_WIDTH - 24);
+  const kbH = rows.length * KEY_H + (rows.length - 1) * KEY_GAP;
   const sticker = createCanvas(STICKER_WIDTH, kbH + STICKER_PAD_Y * 2);
   const ctx = sticker.getContext('2d');
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  drawKeyboard(ctx, game, STICKER_WIDTH, STICKER_PAD_Y);
+  drawKeyboard(ctx, game, STICKER_WIDTH, STICKER_PAD_Y, keyW);
   return encodeSticker(sticker);
 }
 

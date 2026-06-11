@@ -16,11 +16,13 @@ bot.catch((err) => {
 
 const COMMANDS = [
   { command: 'play', description: 'Start a new game' },
+  { command: 'daily', description: "Today's daily puzzle" },
   { command: 'guess', description: 'Guess a 5-letter word' },
   { command: 'w', description: 'Shorthand for /guess' },
   { command: 'board', description: 'Show the current board' },
   { command: 'giveup', description: 'End the game and reveal the word' },
   { command: 'stats', description: 'Your stats in this chat' },
+  { command: 'top', description: 'Chat leaderboard' },
   { command: 'tournament', description: 'Start a turn-based tournament' },
   { command: 'challenge', description: 'Duel a friend' },
   { command: 'usepack', description: 'Use a custom emoji pack for hints' },

@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
-import { Bot, Context, InlineKeyboard, InputFile } from 'grammy';
-import { GameRow, TournamentRow } from '../db.js';
+import { Api, Bot, Context, InlineKeyboard, InputFile } from 'grammy';
+import { GameRow, TournamentRow, activeTournamentChats, allChatIds, getChatStats } from '../db.js';
+import { LANGUAGES, looksLikeGuess } from '../engine/languages.js';
 import { GameService, MAX_GUESSES, UserRef, roundOrder } from '../game/service.js';
 import {
   emojiPackFromStickers,
@@ -16,15 +17,28 @@ import {
   HELP_TEXT,
   RENDER_LABEL,
   alreadyGuessedText,
+  dailyShareText,
   hardModeViolationText,
   humanDuration,
   humanMs,
   parseCreativityValue,
+  parseDuration,
   settingsText,
   standingsText,
   statsText,
+  topText,
   turnOrderText,
 } from './format.js';
+
+function todayStr(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function nowHHMM(): string {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
 
 function userRef(ctx: Context): UserRef {
   const u = ctx.from!;
@@ -66,19 +80,90 @@ function lobbyKeyboard(t: TournamentRow): InlineKeyboard {
 export function registerHandlers(bot: Bot, db: Database.Database): void {
   const svc = new GameService(db);
 
-  async function sendBoard(ctx: Context, chatId: number, game: GameRow, caption: string): Promise<void> {
+  // ---------- tournament turn timers ----------
+
+  const turnTimers = new Map<number, ReturnType<typeof setTimeout>[]>();
+
+  function clearTurnTimers(chatId: number): void {
+    for (const h of turnTimers.get(chatId) ?? []) clearTimeout(h);
+    turnTimers.delete(chatId);
+  }
+
+  function scheduleTurnTimers(chatId: number): void {
+    clearTurnTimers(chatId);
+    const s = svc.settings(chatId);
+    if (s.turnTime <= 0) return;
+    const t = svc.openTournament(chatId);
+    if (!t || t.status !== 'active') return;
+    const current = roundOrder(t.players, t.current_round)[t.turn_idx % t.players.length];
+    // only fire if the turn hasn't moved on since this timer was set
+    const stamp = `${t.id}:${t.current_round}:${t.turn_idx}`;
+    const sameTurn = () => {
+      const cur = svc.openTournament(chatId);
+      return cur !== null && cur.status === 'active' && `${cur.id}:${cur.current_round}:${cur.turn_idx}` === stamp;
+    };
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    if (s.turnTime >= 40) {
+      timers.push(
+        setTimeout(() => {
+          if (!sameTurn()) return;
+          bot.api
+            .sendMessage(chatId, `⏰ ${current.userName}, ${humanDuration(Math.ceil(s.turnTime / 2))} left on your turn!`)
+            .catch(() => {});
+        }, (s.turnTime * 1000) / 2)
+      );
+    }
+    timers.push(
+      setTimeout(async () => {
+        if (!sameTurn()) return;
+        const res = svc.forfeitTurnByTimeout(chatId);
+        if (!res) return;
+        await bot.api
+          .sendMessage(chatId, `⏱ Time's up, ${res.skipped.userName}! 🚷 Turn passes to ${res.nextPlayer.userName}.`)
+          .catch(() => {});
+        scheduleTurnTimers(chatId);
+      }, s.turnTime * 1000)
+    );
+    turnTimers.set(chatId, timers);
+  }
+
+  // tournaments that were mid-game when the bot restarted get their clocks back
+  for (const chatId of activeTournamentChats(db)) scheduleTurnTimers(chatId);
+
+  // ---------- daily puzzle scheduler ----------
+
+  setInterval(async () => {
+    const hhmm = nowHHMM();
+    for (const chatId of allChatIds(db)) {
+      try {
+        if (svc.settings(chatId).dailyTime !== hhmm) continue;
+        const res = svc.startDaily(chatId, todayStr());
+        if (res === 'done' || res === 'busy' || !res.created) continue;
+        await sendBoard(
+          bot.api,
+          chatId,
+          res.game,
+          `☀️ Daily puzzle — ${todayStr()}. Same word for everyone today, 6 tries. Go!`
+        );
+      } catch {
+        // one chat failing must not break the sweep
+      }
+    }
+  }, 60_000);
+
+  async function sendBoard(api: Api, chatId: number, game: GameRow, caption: string): Promise<void> {
     const s = svc.settings(chatId);
     if (s.render === 'image') {
       const buf = renderBoardImage(game);
-      await ctx.api.sendPhoto(chatId, new InputFile(buf, 'board.png'), { caption });
+      await api.sendPhoto(chatId, new InputFile(buf, 'board.png'), { caption });
     } else if (s.render === 'sticker') {
-      await ctx.api.sendSticker(chatId, new InputFile(renderBoardSticker(game), 'board.webp'));
+      await api.sendSticker(chatId, new InputFile(renderBoardSticker(game), 'board.webp'));
       if (game.status === 'active' && game.guesses.length > 0) {
-        await ctx.api.sendSticker(chatId, new InputFile(renderKeyboardSticker(game), 'keyboard.webp'));
+        await api.sendSticker(chatId, new InputFile(renderKeyboardSticker(game), 'keyboard.webp'));
       }
-      if (caption) await ctx.api.sendMessage(chatId, caption);
+      if (caption) await api.sendMessage(chatId, caption);
     } else {
-      await ctx.api.sendMessage(chatId, `${caption}\n\n${textBoard(game)}`);
+      await api.sendMessage(chatId, `${caption}\n\n${textBoard(game)}`);
     }
   }
 
@@ -100,6 +185,9 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const chatId = ctx.chat!.id;
     const user = userRef(ctx);
     const out = svc.submitGuess(chatId, user, word);
+
+    // fails-forfeit moved the turn to the next player — restart their clock
+    if ('failInfo' in out && out.failInfo?.forfeited) scheduleTurnTimers(chatId);
 
     const withFails = (
       msg: string,
@@ -158,9 +246,11 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
 
     if (tournament) {
       const { t, pointsAwarded, roundEnded, tournamentEnded, nextGame, nextPlayer, winners } = tournament;
+      if (tournamentEnded) clearTurnTimers(chatId);
+      else scheduleTurnTimers(chatId);
       if (pointsAwarded > 0) lines.push(`🏅 +${pointsAwarded} pts for ${user.name}!`);
       if (!roundEnded && nextPlayer) lines.push(`Next up: ${nextPlayer.userName}`);
-      await sendBoard(ctx, chatId, game, lines.join('\n'));
+      await sendBoard(ctx.api, chatId, game, lines.join('\n'));
 
       if (tournamentEnded) {
         const winnerNames = winners.map((w) => w.userName).join(' & ');
@@ -169,7 +259,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
         );
       } else if (roundEnded && nextGame && nextPlayer) {
         await sendBoard(
-          ctx,
+      ctx.api,
           chatId,
           nextGame,
           `🏆 Round ${t.current_round}/${t.rounds} — new word!\nStandings so far:\n${standingsText(t)}\n\nTurn order: ${turnOrderText(t)}\n${nextPlayer.userName} goes first.`
@@ -179,7 +269,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     }
 
     if (duel) {
-      await sendBoard(ctx, chatId, game, lines.join('\n'));
+      await sendBoard(ctx.api, chatId, game, lines.join('\n'));
       const { d, finished, bothDone } = duel;
       if (finished && !bothDone) {
         await ctx.reply('⚔️ Your board is done! I will announce the result once your opponent finishes.');
@@ -197,7 +287,10 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       return;
     }
 
-    await sendBoard(ctx, chatId, game, lines.join('\n'));
+    await sendBoard(ctx.api, chatId, game, lines.join('\n'));
+    if (game.kind === 'daily' && (solved || lost)) {
+      await ctx.reply(dailyShareText(game));
+    }
   }
 
   // ---------- commands ----------
@@ -213,7 +306,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       if (res === 'already_playing') return void (await ctx.reply('You already played your board for this duel.'));
       if (res === 'own_game_running') return void (await ctx.reply('Finish your current game here first (/giveup to abandon it).'));
       await ctx.reply('⚔️ Duel on! Same word as your opponent, 6 tries. Just type your 5-letter guesses.');
-      await sendBoard(ctx, ctx.chat.id, res.game, 'Your duel board:');
+      await sendBoard(ctx.api, ctx.chat.id, res.game, 'Your duel board:');
       return;
     }
     await ctx.reply(HELP_TEXT);
@@ -231,12 +324,12 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const hint = s.bareWord
       ? 'Type any 5-letter word to guess.'
       : 'Guess with /guess WORD.';
-    await sendBoard(ctx, chatId, game, `🎮 New game! I picked a 5-letter word — you have ${MAX_GUESSES} tries. ${hint}`);
+    await sendBoard(ctx.api, chatId, game, `🎮 New game! I picked a 5-letter word — you have ${MAX_GUESSES} tries. ${hint}`);
   });
 
   bot.command(['guess', 'w'], async (ctx) => {
     const word = (ctx.match ?? '').trim();
-    if (!/^[a-zA-Z]{5}$/.test(word)) {
+    if (!looksLikeGuess(word)) {
       return void (await ctx.reply('Usage: /guess WORD or /w WORD (a 5-letter word, e.g. /w crane)'));
     }
     await handleGuess(ctx, word);
@@ -286,12 +379,13 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       const current = roundOrder(t.players, t.current_round)[t.turn_idx % t.players.length];
       caption += `\n\n🏆 Round ${t.current_round}/${t.rounds} — ${current.userName}'s turn.\nStandings:\n${standingsText(t)}`;
     }
-    await sendBoard(ctx, chatId, game, caption);
+    await sendBoard(ctx.api, chatId, game, caption);
   });
 
   bot.command('giveup', async (ctx) => {
     const res = svc.giveUp(ctx.chat.id);
     if (!res) return void (await ctx.reply('No active game to give up.'));
+    if (res.tournamentCancelled) clearTurnTimers(ctx.chat.id);
     let msg = `🏳️ Game over — the word was ${res.answer.toUpperCase()}.`;
     if (res.tournamentCancelled) msg += '\nThe tournament was cancelled.';
     await ctx.reply(msg);
@@ -303,10 +397,79 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     await ctx.reply(statsText(row, user.name));
   });
 
+  bot.command('top', async (ctx) => {
+    await ctx.reply(topText(getChatStats(db, ctx.chat.id)));
+  });
+
+  bot.command('daily', async (ctx) => {
+    const chatId = ctx.chat.id;
+    const arg = (ctx.match ?? '').trim().toLowerCase();
+
+    if (arg === 'off') {
+      const s = svc.settings(chatId);
+      s.dailyTime = null;
+      svc.saveSettings(chatId, s);
+      return void (await ctx.reply('☀️ Daily auto-post disabled. /daily still works manually.'));
+    }
+    const time = arg.match(/^(\d{1,2}):(\d{2})$/);
+    if (time) {
+      const hh = parseInt(time[1], 10);
+      const mm = parseInt(time[2], 10);
+      if (hh > 23 || mm > 59) return void (await ctx.reply('Time must be HH:MM, 24-hour.'));
+      const s = svc.settings(chatId);
+      s.dailyTime = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+      svc.saveSettings(chatId, s);
+      return void (await ctx.reply(`☀️ Daily puzzle will be auto-posted here at ${s.dailyTime} (server time).`));
+    }
+    if (arg) {
+      return void (await ctx.reply('Usage: /daily — play today · /daily 09:00 — auto-post time · /daily off'));
+    }
+
+    const res = svc.startDaily(chatId, todayStr());
+    if (res === 'busy') return void (await ctx.reply('Finish the current game first (/board or /giveup), then /daily.'));
+    if (res === 'done') {
+      const g = svc.dailyGame(chatId, todayStr())!;
+      return void (await ctx.reply(`This chat already finished today's daily!\n\n${dailyShareText(g)}`));
+    }
+    const caption = res.created
+      ? `☀️ Daily puzzle — ${todayStr()}. Same word for everyone today, 6 tries. Streaks are on the line!`
+      : `☀️ Today's daily — ${res.game.guesses.length}/${MAX_GUESSES} guesses used.`;
+    await sendBoard(ctx.api, chatId, res.game, caption);
+  });
+
   bot.command('settings', async (ctx) => {
     const chatId = ctx.chat.id;
     const args = (ctx.match ?? '').trim();
     if (args) {
+      const turn = args.match(/^turntime\s+(.+)$/i);
+      if (turn) {
+        const v = turn[1].trim().toLowerCase();
+        const secs = v === 'off' ? 0 : parseDuration(v);
+        if (secs === null || secs > 86400) {
+          return void (await ctx.reply('Examples: /settings turntime 90s | 2m | 5m | off'));
+        }
+        const s = svc.settings(chatId);
+        s.turnTime = secs;
+        svc.saveSettings(chatId, s);
+        if (secs > 0) scheduleTurnTimers(chatId);
+        else clearTurnTimers(chatId);
+        return void (await ctx.reply(
+          secs > 0
+            ? `⏱ Tournament turn timer: ${humanDuration(secs)} per turn (warning at halftime).`
+            : '⏱ Turn timer disabled.'
+        ));
+      }
+      const lang = args.match(/^lang(?:uage)?\s+(\w+)$/i);
+      if (lang) {
+        const code = lang[1].toLowerCase();
+        if (!LANGUAGES[code]) {
+          return void (await ctx.reply(`Unknown language. Available: ${Object.keys(LANGUAGES).join(', ')}`));
+        }
+        const s = svc.settings(chatId);
+        s.language = code;
+        svc.saveSettings(chatId, s);
+        return void (await ctx.reply(`${LANGUAGES[code].label} — new games here use the ${code.toUpperCase()} word list.`));
+      }
       const fails = args.match(/^fails?\s+(\d+|off|unlimited)$/i);
       if (fails) {
         const s = svc.settings(chatId);
@@ -349,6 +512,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       const res = svc.cancelTournament(chatId, ctx.from!.id);
       if (!res) return void (await ctx.reply('No open tournament here.'));
       if (res === 'not_allowed') return void (await ctx.reply('Only the tournament creator can cancel it.'));
+      clearTurnTimers(chatId);
       return void (await ctx.reply('🏳️ Tournament cancelled.'));
     }
     const existing = svc.openTournament(chatId);
@@ -425,12 +589,14 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     await ctx.editMessageText(lobbyText(res.t).replace('Tap Join to enter, then the creator taps Start.', '✅ Started!'));
     const s = svc.settings(ctx.chat!.id);
     const hint = s.bareWord ? 'type any 5-letter word' : 'use /guess WORD';
+    const timerNote = s.turnTime > 0 ? ` ⏱ ${humanDuration(s.turnTime)} per turn.` : '';
     await sendBoard(
-      ctx,
+      ctx.api,
       ctx.chat!.id,
       res.game,
-      `🏆 Round 1/${res.t.rounds} — the word is set!\nTurn order: ${turnOrderText(res.t)}\n${res.firstPlayer.userName} goes first (${hint}).`
+      `🏆 Round 1/${res.t.rounds} — the word is set!\nTurn order: ${turnOrderText(res.t)}\n${res.firstPlayer.userName} goes first (${hint}).${timerNote}`
     );
+    scheduleTurnTimers(ctx.chat!.id);
   });
 
   // ---------- bare-word guessing ----------
@@ -438,7 +604,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text.trim();
     if (text.startsWith('/')) return;
-    if (!/^[a-zA-Z]{5}$/.test(text)) return;
+    if (!looksLikeGuess(text)) return;
     const isPrivate = ctx.chat.type === 'private';
     if (!isPrivate && !svc.settings(ctx.chat.id).bareWord) return;
     await handleGuess(ctx, text, { silentNoGame: true });

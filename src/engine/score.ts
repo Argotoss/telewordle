@@ -35,9 +35,13 @@ export type KeyStatus = TileStatus | 'unused';
 const RANK: Record<KeyStatus, number> = { unused: 0, absent: 1, present: 2, correct: 3 };
 
 /** Best-known status per letter across all guesses (correct > present > absent > unused). */
-export function keyboardStatus(answer: string, guesses: string[]): Map<string, KeyStatus> {
+export function keyboardStatus(
+  answer: string,
+  guesses: string[],
+  alphabet = 'abcdefghijklmnopqrstuvwxyz'
+): Map<string, KeyStatus> {
   const map = new Map<string, KeyStatus>();
-  for (const c of 'abcdefghijklmnopqrstuvwxyz') map.set(c, 'unused');
+  for (const c of alphabet) map.set(c, 'unused');
   for (const guess of guesses) {
     const score = scoreGuess(answer, guess);
     const g = guess.toLowerCase();

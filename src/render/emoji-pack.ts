@@ -90,8 +90,9 @@ export function escapeHtml(text: string): string {
 }
 
 export function formatTileLetter(letter: string, color: TileColor, emojiPack: EmojiPackConfig | null): string {
-  if (emojiPack) {
-    const id = emojiPack.tiles[tileKey(letter, color)];
+  // packs only cover A-Z; non-Latin letters always use the plain fallback
+  const id = emojiPack?.tiles[tileKey(letter, color)];
+  if (id) {
     return `<tg-emoji emoji-id="${id}">${FALLBACK_EMOJI}</tg-emoji>`;
   }
 

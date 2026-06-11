@@ -1,7 +1,8 @@
-import { ChatSettings, Difficulty, StatsRow, TournamentRow } from '../db.js';
+import { ChatSettings, Difficulty, GameRow, StatsRow, TournamentRow } from '../db.js';
 import type { HardModeViolation } from '../engine/hardmode.js';
+import { getLanguage, LANGUAGES } from '../engine/languages.js';
 import { scoreGuess, type TileStatus } from '../engine/score.js';
-import { roundOrder } from '../game/service.js';
+import { MAX_GUESSES, roundOrder } from '../game/service.js';
 import { formatTileLetter, type EmojiPackConfig, type TileColor } from '../render/emoji-pack.js';
 
 export const HELP_TEXT = `🟩 Wordle Bot — How to Play
@@ -15,13 +16,14 @@ Guess it in 6 tries — everyone in the chat plays together!
 
 Commands
 /play — start a new game
+/daily — today's daily puzzle (same word everywhere!)
 /guess WORD — submit a guess (/w works too)
 /board — show the current board
 /giveup — end the game and reveal the word
-/stats — your stats in this chat
+/stats — your stats · /top — chat leaderboard
 /tournament N — start an N-round turn-based tournament
 /challenge — duel a friend (same word, fewest guesses wins)
-/settings — bare-word guessing, image/text mode, difficulty, creativity mode
+/settings — board style, language, difficulty, creativity & more
 /help — this message`;
 
 export const DIFFICULTY_LABEL: Record<Difficulty, string> = {
@@ -85,13 +87,26 @@ export function settingsText(s: ChatSettings): string {
 
 • Bare words: ${s.bareWord ? 'ON — plain 5-letter words count' : 'OFF — guess with /guess WORD'}
 • Board: ${RENDER_LABEL[s.render]}
+• Language: ${getLanguage(s.language).label} · /settings lang ${Object.keys(LANGUAGES).filter((c) => c !== s.language).join(' | ')}
 • Difficulty: ${DIFFICULTY_LABEL[s.difficulty]} — ${DIFFICULTY_NOTE[s.difficulty]}
 • Creativity: ${describeCreativity(s)} · /settings creativity 30m | 15w
 • Max fails: ${s.maxFails > 0 ? `${s.maxFails} per player` : 'unlimited'} · /settings fails 5 | off
+• Turn timer: ${s.turnTime > 0 ? `${humanDuration(s.turnTime)} (tournaments)` : 'off'} · /settings turntime 2m | off
+• Daily puzzle: ${s.dailyTime ? `auto-post at ${s.dailyTime}` : 'manual — /daily to play'} · /daily 09:00 | off
 • Emoji pack: ${s.emojiPack ? s.emojiPack.name : 'default'} · /usepack NAME | off
 
 Fails: rejected guesses lock you out of the game (tournaments: forfeit your turn).
 Bare words need privacy mode off (@BotFather → /setprivacy).`;
+}
+
+/** Parse "90s" / "2m" / "1h" / "1d" into seconds. */
+export function parseDuration(input: string): number | null {
+  const m = input.trim().toLowerCase().match(/^(\d+)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)$/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  if (n <= 0) return null;
+  const unit = m[2][0];
+  return n * (unit === 's' ? 1 : unit === 'm' ? 60 : unit === 'h' ? 3600 : 86400);
 }
 
 export function humanDuration(seconds: number): string {
@@ -120,35 +135,80 @@ export function parseCreativityValue(input: string): { seconds: number } | { cou
   return null;
 }
 
+const ROW_NUM = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'];
+
 export function statsText(s: StatsRow, displayName: string): string {
-  const winRate = s.games_played ? Math.round((100 * s.games_won) / s.games_played) : 0;
-  const guessAcc = s.guesses_total
-    ? `${Math.round((100 * s.greens) / (s.guesses_total * 5))}% green, ${Math.round((100 * s.yellows) / (s.guesses_total * 5))}% yellow`
-    : '—';
+  const pct = (a: number, b: number) => (b ? Math.round((100 * a) / b) : 0);
+  const winRate = pct(s.games_won, s.games_played);
+  const solveShare = pct(s.solves, s.games_won);
+
+  const lines: string[] = [`📊 ${displayName}`, ''];
+  lines.push(`🎮 Games · ${s.games_played} played, ${s.games_won} won (${winRate}%)`);
+  if (s.solves > 0) lines.push(`🎯 Solver · ${s.solves} winning guess${s.solves > 1 ? 'es' : ''} — ${solveShare}% of wins`);
+  lines.push(`🔥 Streak · ${s.current_streak} now, ${s.best_streak} best`);
+  if (s.fastest_ms !== null) lines.push(`⚡ Fastest · ${humanMs(s.fastest_ms)}`);
+  if (s.guesses_total > 0) {
+    lines.push(`✍️ Letters · ${s.guesses_total} guesses, ${pct(s.greens, s.guesses_total * 5)}% 🟩 ${pct(s.yellows, s.guesses_total * 5)}% 🟨`);
+  }
+
   const dist = [s.dist1, s.dist2, s.dist3, s.dist4, s.dist5, s.dist6];
-  const maxDist = Math.max(1, ...dist);
-  const distLines = dist
-    .map((n, i) => `${i + 1}: ${'▓'.repeat(Math.max(n > 0 ? 1 : 0, Math.round((n / maxDist) * 8)))} ${n}`)
+  if (dist.some((n) => n > 0)) {
+    const maxDist = Math.max(...dist);
+    lines.push('', 'Winning guesses');
+    dist.forEach((n, i) => {
+      const bar = n > 0 ? '▰'.repeat(Math.max(1, Math.round((n / maxDist) * 8))) + ` ${n}` : '·';
+      lines.push(`${ROW_NUM[i]} ${bar}`);
+    });
+  }
+
+  const extras: string[] = [];
+  if (s.daily_played > 0) extras.push(`☀️ Daily · ${s.daily_played} played, streak ${s.daily_streak} (best ${s.daily_best})`);
+  if (s.tournaments_played > 0) extras.push(`🏆 Tournaments · ${s.tournaments_played} played, ${s.tournaments_won} won, ${s.tournament_points} pts`);
+  if (s.duels_played > 0) extras.push(`⚔️ Duels · ${s.duels_played} played, ${s.duels_won} won`);
+  if (extras.length) lines.push('', ...extras);
+
+  if (s.games_played === 0 && extras.length === 0) {
+    return `📊 ${displayName}\n\nNothing here yet — guess a word and come back! 🟩`;
+  }
+  return lines.join('\n');
+}
+
+/** Chat leaderboard: ranked by winning guesses, then wins, then points. */
+export function topText(rows: StatsRow[]): string {
+  if (!rows.length) return '🏆 No players yet — /play to get this chat on the board!';
+  const ranked = [...rows].sort(
+    (a, b) =>
+      b.solves - a.solves ||
+      b.games_won - a.games_won ||
+      b.tournament_points - a.tournament_points ||
+      a.guesses_total - b.guesses_total
+  );
+  const medals = ['🥇', '🥈', '🥉'];
+  const lines = ranked.slice(0, 10).map((s, i) => {
+    const rank = medals[i] ?? ` ${i + 1}.`;
+    const winRate = s.games_played ? Math.round((100 * s.games_won) / s.games_played) : 0;
+    const bits = [`${s.solves} solve${s.solves === 1 ? '' : 's'}`, `${winRate}% wins`];
+    if (s.current_streak > 1) bits.push(`🔥${s.current_streak}`);
+    if (s.tournament_points > 0) bits.push(`🏆${s.tournament_points}`);
+    return `${rank} ${s.name || 'Player'} — ${bits.join(' · ')}`;
+  });
+  return `🏆 Leaderboard\n\n${lines.join('\n')}\n\nRanked by winning guesses. Play to climb!`;
+}
+
+/** Spoiler-free result grid for the daily puzzle, in the classic shareable format. */
+export function dailyShareText(game: GameRow): string {
+  const solved = game.status === 'solved';
+  const tries = solved ? `${game.guesses.length}/${MAX_GUESSES}` : `X/${MAX_GUESSES}`;
+  const grid = game.guesses
+    .map((g) =>
+      scoreGuess(game.answer, g.word)
+        .map((s) => (s === 'correct' ? '🟩' : s === 'present' ? '🟨' : '⬛'))
+        .join('')
+    )
     .join('\n');
-  const fastest = s.fastest_ms !== null ? humanMs(s.fastest_ms) : '—';
-  const solveShare = s.games_won ? Math.round((100 * s.solves) / s.games_won) : 0;
-
-  return `📊 Stats — ${displayName}
-
-Games played: ${s.games_played}
-Games won (with the group): ${s.games_won} (${winRate}%)
-Winning guesses by you: ${s.solves}${s.games_won ? ` — you land the final word in ${solveShare}% of wins` : ''}
-Current streak: ${s.current_streak} · Best streak: ${s.best_streak}
-Fastest solve: ${fastest}
-
-Guesses made: ${s.guesses_total}
-Letter accuracy: ${guessAcc}
-
-Winning-guess distribution
-${distLines}
-
-🏆 Tournaments: ${s.tournaments_played} played · ${s.tournaments_won} won · ${s.tournament_points} pts
-⚔️ Duels: ${s.duels_played} played · ${s.duels_won} won`;
+  const solver = solved ? `\n🎉 Solved by ${game.guesses[game.guesses.length - 1].userName}` : '';
+  const langTag = game.lang !== 'en' ? ` (${game.lang.toUpperCase()})` : '';
+  return `☀️ Daily${langTag} — ${game.daily_date} — ${tries}\n\n${grid}${solver}`;
 }
 
 export function humanMs(ms: number): string {

@@ -18,10 +18,16 @@ export interface ChatSettings {
   bareWord: boolean;
   render: RenderMode;
   difficulty: Difficulty;
-  /** Tournaments: rejected guess attempts allowed per turn before it is forfeited. 0 = unlimited. */
+  /** Rejected guess attempts allowed before lockout (normal games) / turn forfeit (tournaments). 0 = unlimited. */
   maxFails: number;
+  /** Tournaments: seconds a player gets per turn before it is forfeited. 0 = no timer. */
+  turnTime: number;
+  /** Word list language code (see engine/languages.ts). */
+  language: string;
+  /** Daily puzzle auto-post time as 'HH:MM' (server time), or null when not scheduled. */
+  dailyTime: string | null;
   creativity: CreativitySettings;
-  /** Custom emoji tiles for hint messages (set via /usepack), or null for plain emoji. */
+  /** Custom emoji tiles for hint messages (set via /usepack), or null for the bundled default. */
   emojiPack: EmojiPackConfig | null;
 }
 
@@ -30,6 +36,9 @@ export const DEFAULT_SETTINGS: ChatSettings = {
   render: 'image',
   difficulty: 'normal',
   maxFails: 5,
+  turnTime: 120,
+  language: 'en',
+  dailyTime: null,
   creativity: { enabled: true, mode: 'time', seconds: 3600, count: 20 },
   emojiPack: null,
 };
@@ -41,7 +50,7 @@ export interface GuessEntry {
   ts: number;
 }
 
-export type GameKind = 'normal' | 'tournament' | 'duel';
+export type GameKind = 'normal' | 'tournament' | 'duel' | 'daily';
 export type GameStatus = 'active' | 'solved' | 'lost';
 
 export interface GameRow {
@@ -53,6 +62,9 @@ export interface GameRow {
   guesses: GuessEntry[];
   /** rejected attempts per user this game (normal games; tournaments track per turn instead) */
   fail_counts: Record<string, number>;
+  lang: string;
+  /** set for kind 'daily': the puzzle date 'YYYY-MM-DD' */
+  daily_date: string | null;
   started_at: number;
   finished_at: number | null;
   tournament_id: number | null;
@@ -122,6 +134,10 @@ export interface StatsRow {
   tournament_points: number;
   duels_played: number;
   duels_won: number;
+  daily_played: number;
+  daily_streak: number;
+  daily_best: number;
+  last_daily: string | null;
 }
 
 export function openDb(path: string): Database.Database {
@@ -140,6 +156,8 @@ export function openDb(path: string): Database.Database {
       kind TEXT NOT NULL DEFAULT 'normal',
       guesses TEXT NOT NULL DEFAULT '[]',
       fail_counts TEXT NOT NULL DEFAULT '{}',
+      lang TEXT NOT NULL DEFAULT 'en',
+      daily_date TEXT,
       started_at INTEGER NOT NULL,
       finished_at INTEGER,
       tournament_id INTEGER,
@@ -197,6 +215,10 @@ export function openDb(path: string): Database.Database {
       tournament_points INTEGER NOT NULL DEFAULT 0,
       duels_played INTEGER NOT NULL DEFAULT 0,
       duels_won INTEGER NOT NULL DEFAULT 0,
+      daily_played INTEGER NOT NULL DEFAULT 0,
+      daily_streak INTEGER NOT NULL DEFAULT 0,
+      daily_best INTEGER NOT NULL DEFAULT 0,
+      last_daily TEXT,
       PRIMARY KEY (chat_id, user_id)
     );
   `);
@@ -208,6 +230,17 @@ export function openDb(path: string): Database.Database {
   const gCols = db.prepare('PRAGMA table_info(games)').all() as { name: string }[];
   if (!gCols.some((c) => c.name === 'fail_counts')) {
     db.exec("ALTER TABLE games ADD COLUMN fail_counts TEXT NOT NULL DEFAULT '{}'");
+  }
+  if (!gCols.some((c) => c.name === 'lang')) {
+    db.exec("ALTER TABLE games ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'");
+    db.exec('ALTER TABLE games ADD COLUMN daily_date TEXT');
+  }
+  const sCols = db.prepare('PRAGMA table_info(stats)').all() as { name: string }[];
+  if (!sCols.some((c) => c.name === 'daily_played')) {
+    db.exec('ALTER TABLE stats ADD COLUMN daily_played INTEGER NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE stats ADD COLUMN daily_streak INTEGER NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE stats ADD COLUMN daily_best INTEGER NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE stats ADD COLUMN last_daily TEXT');
   }
   return db;
 }
@@ -259,16 +292,35 @@ export function createGame(
   chatId: number,
   answer: string,
   kind: GameKind = 'normal',
-  opts: { tournamentId?: number; duelId?: number } = {}
+  opts: { tournamentId?: number; duelId?: number; lang?: string; dailyDate?: string } = {}
 ): GameRow {
   const now = Date.now();
   const info = db
     .prepare(
-      `INSERT INTO games (chat_id, answer, kind, started_at, tournament_id, duel_id)
-       VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO games (chat_id, answer, kind, lang, daily_date, started_at, tournament_id, duel_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(chatId, answer, kind, now, opts.tournamentId ?? null, opts.duelId ?? null);
+    .run(chatId, answer, kind, opts.lang ?? 'en', opts.dailyDate ?? null, now, opts.tournamentId ?? null, opts.duelId ?? null);
   return getGame(db, Number(info.lastInsertRowid))!;
+}
+
+export function getDailyGame(db: Database.Database, chatId: number, dateStr: string): GameRow | null {
+  const row = db
+    .prepare(`SELECT * FROM games WHERE chat_id = ? AND kind = 'daily' AND daily_date = ? LIMIT 1`)
+    .get(chatId, dateStr);
+  return row ? parseGame(row) : null;
+}
+
+/** All chats that have ever saved settings (used by the daily scheduler). */
+export function allChatIds(db: Database.Database): number[] {
+  return (db.prepare('SELECT chat_id FROM chats').all() as { chat_id: number }[]).map((r) => r.chat_id);
+}
+
+/** Chats with a tournament currently in progress (used to restore turn timers on boot). */
+export function activeTournamentChats(db: Database.Database): number[] {
+  return (
+    db.prepare(`SELECT DISTINCT chat_id FROM tournaments WHERE status = 'active'`).all() as { chat_id: number }[]
+  ).map((r) => r.chat_id);
 }
 
 export function updateGame(db: Database.Database, game: GameRow): void {
@@ -373,6 +425,16 @@ export function updateDuel(db: Database.Database, d: DuelRow): void {
 
 // ---------- stats ----------
 
+/** Everyone with at least one game in this chat, for the leaderboard. */
+export function getChatStats(db: Database.Database, chatId: number): StatsRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM stats WHERE chat_id = ?
+       AND (games_played > 0 OR tournaments_played > 0 OR duels_played > 0 OR daily_played > 0)`
+    )
+    .all(chatId) as StatsRow[];
+}
+
 export function getStats(db: Database.Database, chatId: number, userId: number): StatsRow {
   let row = db
     .prepare('SELECT * FROM stats WHERE chat_id = ? AND user_id = ?')
@@ -389,7 +451,12 @@ export function bumpStats(
   chatId: number,
   userId: number,
   name: string,
-  delta: Partial<Record<keyof Omit<StatsRow, 'chat_id' | 'user_id' | 'name' | 'fastest_ms' | 'current_streak'>, number>>,
+  delta: Partial<
+    Record<
+      keyof Omit<StatsRow, 'chat_id' | 'user_id' | 'name' | 'fastest_ms' | 'current_streak' | 'daily_streak' | 'daily_best' | 'last_daily'>,
+      number
+    >
+  >,
   extra: { setCurrentStreak?: number; fastestMs?: number } = {}
 ): void {
   const row = getStats(db, chatId, userId);
@@ -414,4 +481,23 @@ export function bumpStats(
   }
   values.push(chatId, userId);
   db.prepare(`UPDATE stats SET ${updates.join(', ')} WHERE chat_id = ? AND user_id = ?`).run(...values);
+}
+
+/** Record a finished daily for one participant, maintaining their consecutive-day streak. */
+export function recordDailyResult(
+  db: Database.Database,
+  chatId: number,
+  userId: number,
+  name: string,
+  dateStr: string,
+  solved: boolean
+): void {
+  const row = getStats(db, chatId, userId);
+  if (row.last_daily === dateStr) return; // already counted today
+  const yesterday = new Date(new Date(`${dateStr}T12:00:00Z`).getTime() - 86400000).toISOString().slice(0, 10);
+  const streak = solved ? (row.last_daily === yesterday ? row.daily_streak + 1 : 1) : 0;
+  db.prepare(
+    `UPDATE stats SET name = ?, daily_played = daily_played + 1, daily_streak = ?, daily_best = MAX(daily_best, ?), last_daily = ?
+     WHERE chat_id = ? AND user_id = ?`
+  ).run(name, streak, streak, dateStr, chatId, userId);
 }

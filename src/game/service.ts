@@ -25,8 +25,10 @@ import {
   updateTournament,
 } from '../db.js';
 import { hardModeViolation, type HardModeViolation } from '../engine/hardmode.js';
+import { getLanguage } from '../engine/languages.js';
 import { scoreGuess, TileStatus } from '../engine/score.js';
-import { isValidWord, pickAnswer } from '../engine/words.js';
+import { dailyAnswer, isValidWord, pickAnswer } from '../engine/words.js';
+import { getDailyGame, recordDailyResult } from '../db.js';
 
 export const MAX_GUESSES = 6;
 
@@ -108,8 +110,26 @@ export class GameService {
   startGame(chatId: number): GameRow | null {
     if (getActiveGame(this.db, chatId)) return null;
     const s = getSettings(this.db, chatId);
-    const answer = pickAnswer(recentWords(this.db, chatId, s.creativity));
-    return createGame(this.db, chatId, answer, 'normal');
+    const answer = pickAnswer(recentWords(this.db, chatId, s.creativity), s.language);
+    return createGame(this.db, chatId, answer, 'normal', { lang: s.language });
+  }
+
+  /**
+   * Start (or fetch) today's daily puzzle. The word is deterministic per
+   * language per date — every chat gets the same one.
+   */
+  startDaily(chatId: number, dateStr: string): { game: GameRow; created: boolean } | 'busy' | 'done' {
+    const existing = getDailyGame(this.db, chatId, dateStr);
+    if (existing) return existing.status === 'active' ? { game: existing, created: false } : 'done';
+    if (getActiveGame(this.db, chatId)) return 'busy';
+    const s = getSettings(this.db, chatId);
+    const answer = dailyAnswer(dateStr, s.language);
+    const game = createGame(this.db, chatId, answer, 'daily', { lang: s.language, dailyDate: dateStr });
+    return { game, created: true };
+  }
+
+  dailyGame(chatId: number, dateStr: string): GameRow | null {
+    return getDailyGame(this.db, chatId, dateStr);
   }
 
   /** Abort the current game (and tournament, if any). Returns the revealed answer or null. */
@@ -133,9 +153,9 @@ export class GameService {
   }
 
   submitGuess(chatId: number, user: UserRef, rawWord: string): GuessOutcome {
-    const word = rawWord.trim().toLowerCase();
     const game = getActiveGame(this.db, chatId);
     if (!game) return { type: 'no_game' };
+    const word = getLanguage(game.lang).normalize(rawWord.trim());
 
     const settings = getSettings(this.db, chatId);
     const isDuel = game.kind === 'duel';
@@ -163,7 +183,7 @@ export class GameService {
     const fail = <T extends Extract<GuessOutcome, { failInfo?: FailInfo }>>(outcome: T): T =>
       this.countFailedAttempt(tournament, lockoutApplies ? game : null, user, settings.maxFails, outcome);
 
-    if (!isValidWord(word)) return fail({ type: 'not_a_word', word });
+    if (!isValidWord(word, game.lang)) return fail({ type: 'not_a_word', word });
     if (game.guesses.some((g) => g.word === word)) return fail({ type: 'already_guessed', word });
 
     // creativity mode (not for duels — both duelists must face the same word fairly)
@@ -203,11 +223,31 @@ export class GameService {
     } else {
       this.applyGuessStats(chatId, user, score);
       if (solved || lost) this.applyGameEndStats(chatId, game, solved, guessNumber);
+      if ((solved || lost) && game.kind === 'daily' && game.daily_date) {
+        const participants = new Map<number, string>();
+        for (const g of game.guesses) participants.set(g.userId, g.userName);
+        for (const [userId, name] of participants) {
+          recordDailyResult(this.db, chatId, userId, name, game.daily_date, solved);
+        }
+      }
       if (tournament && tournament.status === 'active') {
         outcome.tournament = this.advanceTournament(tournament, user, solved, lost, guessNumber);
       }
     }
     return outcome;
+  }
+
+  /** Skip the current tournament player's turn (turn timer expired). */
+  forfeitTurnByTimeout(chatId: number): { t: TournamentRow; skipped: TournamentPlayer; nextPlayer: TournamentPlayer } | null {
+    const t = getOpenTournament(this.db, chatId);
+    if (!t || t.status !== 'active') return null;
+    const order = roundOrder(t.players, t.current_round);
+    const skipped = order[t.turn_idx % order.length];
+    t.turn_idx = (t.turn_idx + 1) % t.players.length;
+    t.fail_count = 0;
+    updateTournament(this.db, t);
+    const nextPlayer = roundOrder(t.players, t.current_round)[t.turn_idx];
+    return { t, skipped, nextPlayer };
   }
 
   // ---------- tournaments ----------
@@ -272,8 +312,8 @@ export class GameService {
 
   private newTournamentGame(t: TournamentRow): GameRow {
     const s = getSettings(this.db, t.chat_id);
-    const answer = pickAnswer(recentWords(this.db, t.chat_id, s.creativity));
-    return createGame(this.db, t.chat_id, answer, 'tournament', { tournamentId: t.id });
+    const answer = pickAnswer(recentWords(this.db, t.chat_id, s.creativity), s.language);
+    return createGame(this.db, t.chat_id, answer, 'tournament', { tournamentId: t.id, lang: s.language });
   }
 
   /**
@@ -378,7 +418,7 @@ export class GameService {
   /** Create a duel; challenger plays in their private chat once they press Play. */
   createDuel(chatId: number, challenger: UserRef): DuelRow {
     const s = getSettings(this.db, chatId);
-    const answer = pickAnswer(recentWords(this.db, chatId, s.creativity));
+    const answer = pickAnswer(recentWords(this.db, chatId, s.creativity), s.language);
     return createDuel(this.db, chatId, answer, {
       userId: challenger.id,
       userName: challenger.name,
@@ -412,7 +452,8 @@ export class GameService {
       d.status = 'active';
       updateDuel(this.db, d);
     }
-    const game = createGame(this.db, privateChatId, d.answer, 'duel', { duelId: d.id });
+    const lang = getSettings(this.db, d.chat_id).language;
+    const game = createGame(this.db, privateChatId, d.answer, 'duel', { duelId: d.id, lang });
     return { d: getDuel(this.db, duelId)!, game };
   }
 

@@ -1,6 +1,6 @@
 # telewordle
 
-A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat plays together — with image or text boards, tournaments, duels, hard/super-hard difficulty, and a "creativity mode" that bans recently used words.
+A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat plays together — with image/sticker/text boards, a daily puzzle, tournaments with turn timers, duels, leaderboards, multiple languages (English & Russian), hard/super-hard difficulty, and a "creativity mode" that bans recently used words.
 
 ## Quick start
 
@@ -19,6 +19,8 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
 | Command | What it does |
 |---|---|
 | `/play` | Start a new game (random word, 6 tries, shared board) |
+| `/daily` | Today's daily puzzle — same word everywhere, daily streaks; `/daily 09:00` auto-posts it, `/daily off` stops |
+| `/top` | Chat leaderboard |
 | `/guess WORD` | Submit a guess (`/w WORD` works too) |
 | `/board` | Show the current board (and tournament standings) |
 | `/giveup` | Abandon the game and reveal the word |
@@ -44,6 +46,8 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
   - **hard** — every revealed green/yellow hint must be used in all later guesses.
   - **super hard** — hard, plus gray letters can't be played again and known letter counts are enforced. You must use *all* information you have.
 - **Max failed attempts** (default **5**) — rejected guesses (unknown word, hard-mode or creativity violation) count as fails. In normal games, a player who hits the limit is locked out for the rest of that game; in tournaments, the turn is forfeited. `/settings fails 3`, or `/settings fails off` for unlimited.
+- **Turn timer** (default **2m**, tournaments) — the player at turn gets a halftime warning, then their turn is forfeited. `/settings turntime 90s`, or `off`.
+- **Language** (default **English**) — `/settings lang ru` switches new games to the Russian word list (ЙЦУКЕН keyboard included; ё plays as е). Adding a language is one entry in `src/engine/languages.ts` plus two word-list files under `data/words/<code>/`.
 - **Creativity mode** (default **on, 1-hour window**) — words used recently in this chat (guesses *and* answers) are banned from being guessed and from being picked as the answer. Configure as a time window or a word count:
   ```
   /settings creativity 30m        # s / m / h / d

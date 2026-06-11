@@ -1,4 +1,5 @@
 import { GameRow } from '../db.js';
+import { getLanguage } from '../engine/languages.js';
 import { keyboardStatus, scoreGuess, TileStatus } from '../engine/score.js';
 import { MAX_GUESSES } from '../game/service.js';
 
@@ -39,12 +40,13 @@ export function textBoard(game: GameRow, opts: { revealAnswer?: boolean } = {}):
 
 /** Compact letter-status summary, the text-mode equivalent of the on-screen keyboard. */
 export function keyboardLine(game: GameRow): string {
-  const status = keyboardStatus(game.answer, game.guesses.map((g) => g.word));
+  const alphabet = getLanguage(game.lang).alphabet;
+  const status = keyboardStatus(game.answer, game.guesses.map((g) => g.word), alphabet);
   const greens: string[] = [];
   const yellows: string[] = [];
   const grays: string[] = [];
   const unused: string[] = [];
-  for (const c of 'abcdefghijklmnopqrstuvwxyz') {
+  for (const c of alphabet) {
     const s = status.get(c);
     const C = c.toUpperCase();
     if (s === 'correct') greens.push(C);
