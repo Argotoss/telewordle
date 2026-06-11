@@ -26,7 +26,7 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
 | `/tournament N` | Start an N-round turn-based tournament |
 | `/tournament cancel` | Cancel the open tournament (creator only) |
 | `/challenge` | Duel: same word for two players, fewest guesses wins |
-| `/usepack NAME` | Render hints with a custom emoji tile pack (`/usepack off` to remove) |
+| `/usepack NAME` | Render hints with your own custom emoji tile pack (`/usepack off` resets to the bundled default pack) |
 | `/settings` | Per-chat settings (see below) |
 | `/help` | How to play |
 
@@ -43,7 +43,7 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
 - **Difficulty** (default **normal**)
   - **hard** — every revealed green/yellow hint must be used in all later guesses.
   - **super hard** — hard, plus gray letters can't be played again and known letter counts are enforced. You must use *all* information you have.
-- **Max failed attempts** (default **5**, tournaments only) — rejected guesses by the player at turn (unknown word, hard-mode or creativity violation) count as fails; hitting the limit forfeits the turn, so nobody can stall by spamming nonsense. `/settings fails 3`, or `/settings fails off` for unlimited.
+- **Max failed attempts** (default **5**) — rejected guesses (unknown word, hard-mode or creativity violation) count as fails. In normal games, a player who hits the limit is locked out for the rest of that game; in tournaments, the turn is forfeited. `/settings fails 3`, or `/settings fails off` for unlimited.
 - **Creativity mode** (default **on, 1-hour window**) — words used recently in this chat (guesses *and* answers) are banned from being guessed and from being picked as the answer. Configure as a time window or a word count:
   ```
   /settings creativity 30m        # s / m / h / d

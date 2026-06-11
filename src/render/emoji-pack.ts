@@ -5,6 +5,9 @@
 // messages render real Wordle-style tiles; otherwise we fall back to
 // ordinary emoji + letters.
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 export type TileColor = 'gray' | 'yellow' | 'green' | 'dark-gray';
 export type TileKey = `${string}-${TileColor}`;
 
@@ -53,6 +56,23 @@ export function isEmojiPackConfig(value: unknown): value is EmojiPackConfig {
   const config = value as Partial<EmojiPackConfig>;
   if (typeof config.name !== 'string' || typeof config.tiles !== 'object' || config.tiles === null) return false;
   return orderedTileKeys().every((key) => typeof config.tiles?.[key] === 'string');
+}
+
+/** Bundled default tile pack, used when a chat has not set its own via /usepack. */
+export const DEFAULT_EMOJI_PACK: EmojiPackConfig | null = loadDefaultPack();
+
+function loadDefaultPack(): EmojiPackConfig | null {
+  try {
+    const dir = process.env.WORDLE_DATA_DIR ?? join(process.cwd(), 'data');
+    const raw = JSON.parse(readFileSync(join(dir, 'default-emoji-pack.json'), 'utf8'));
+    return isEmojiPackConfig(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveEmojiPack(chatPack: EmojiPackConfig | null): EmojiPackConfig | null {
+  return chatPack ?? DEFAULT_EMOJI_PACK;
 }
 
 /** Accepts a bare name, a full pack name, or a t.me/addemoji/... link. */

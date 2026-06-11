@@ -51,6 +51,8 @@ export interface GameRow {
   status: GameStatus;
   kind: GameKind;
   guesses: GuessEntry[];
+  /** rejected attempts per user this game (normal games; tournaments track per turn instead) */
+  fail_counts: Record<string, number>;
   started_at: number;
   finished_at: number | null;
   tournament_id: number | null;
@@ -137,6 +139,7 @@ export function openDb(path: string): Database.Database {
       status TEXT NOT NULL DEFAULT 'active',
       kind TEXT NOT NULL DEFAULT 'normal',
       guesses TEXT NOT NULL DEFAULT '[]',
+      fail_counts TEXT NOT NULL DEFAULT '{}',
       started_at INTEGER NOT NULL,
       finished_at INTEGER,
       tournament_id INTEGER,
@@ -197,10 +200,14 @@ export function openDb(path: string): Database.Database {
       PRIMARY KEY (chat_id, user_id)
     );
   `);
-  // migration for databases created before the max-fails feature
-  const cols = db.prepare('PRAGMA table_info(tournaments)').all() as { name: string }[];
-  if (!cols.some((c) => c.name === 'fail_count')) {
+  // migrations for databases created before the max-fails features
+  const tCols = db.prepare('PRAGMA table_info(tournaments)').all() as { name: string }[];
+  if (!tCols.some((c) => c.name === 'fail_count')) {
     db.exec("ALTER TABLE tournaments ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0");
+  }
+  const gCols = db.prepare('PRAGMA table_info(games)').all() as { name: string }[];
+  if (!gCols.some((c) => c.name === 'fail_counts')) {
+    db.exec("ALTER TABLE games ADD COLUMN fail_counts TEXT NOT NULL DEFAULT '{}'");
   }
   return db;
 }
@@ -232,7 +239,7 @@ export function saveSettings(db: Database.Database, chatId: number, s: ChatSetti
 // ---------- games ----------
 
 function parseGame(row: any): GameRow {
-  return { ...row, guesses: JSON.parse(row.guesses) };
+  return { ...row, guesses: JSON.parse(row.guesses), fail_counts: JSON.parse(row.fail_counts ?? '{}') };
 }
 
 export function getActiveGame(db: Database.Database, chatId: number): GameRow | null {
@@ -266,8 +273,8 @@ export function createGame(
 
 export function updateGame(db: Database.Database, game: GameRow): void {
   db.prepare(
-    `UPDATE games SET status = ?, guesses = ?, finished_at = ? WHERE id = ?`
-  ).run(game.status, JSON.stringify(game.guesses), game.finished_at, game.id);
+    `UPDATE games SET status = ?, guesses = ?, fail_counts = ?, finished_at = ? WHERE id = ?`
+  ).run(game.status, JSON.stringify(game.guesses), JSON.stringify(game.fail_counts), game.finished_at, game.id);
 }
 
 // ---------- used words (creativity mode) ----------

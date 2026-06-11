@@ -54,6 +54,17 @@ describe('formatTileLetter', () => {
   });
 });
 
+describe('default pack', () => {
+  it('loads the bundled default pack and lets chat packs override it', async () => {
+    const { DEFAULT_EMOJI_PACK, resolveEmojiPack } = await import('../src/render/emoji-pack.js');
+    expect(DEFAULT_EMOJI_PACK?.name).toBe('official_wordle_bot_by_Exposed_Robot');
+    expect(isEmojiPackConfig(DEFAULT_EMOJI_PACK)).toBe(true);
+    expect(resolveEmojiPack(null)).toBe(DEFAULT_EMOJI_PACK);
+    const own = pack();
+    expect(resolveEmojiPack(own)).toBe(own);
+  });
+});
+
 describe('packNameCandidates', () => {
   it('accepts t.me/addemoji links', () => {
     expect(packNameCandidates('https://t.me/addemoji/MyTiles_by_somebot', 'somebot')).toEqual(['MyTiles_by_somebot']);

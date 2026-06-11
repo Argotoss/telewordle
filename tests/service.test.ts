@@ -226,7 +226,7 @@ describe('tournaments', () => {
     // A (at turn) spams nonsense
     const f1 = svc.submitGuess(CHAT, A, 'zzzzz');
     if (f1.type !== 'not_a_word') throw new Error('expected not_a_word');
-    expect(f1.failInfo).toEqual({ count: 1, max: 2, forfeited: false, nextPlayer: null });
+    expect(f1.failInfo).toEqual({ count: 1, max: 2, forfeited: false, lockedOut: false, nextPlayer: null });
 
     const f2 = svc.submitGuess(CHAT, A, 'qqqqq');
     if (f2.type !== 'not_a_word') throw new Error('expected not_a_word');
@@ -281,6 +281,43 @@ describe('tournaments', () => {
     expect(res).not.toBe('not_allowed');
     expect(svc.openTournament(CHAT)).toBeNull();
     expect(t.id).toBeTruthy();
+  });
+});
+
+describe('max fails in normal games', () => {
+  it('locks a player out after maxFails rejected guesses (default 5)', () => {
+    const game = svc.startGame(CHAT)!;
+    for (let i = 1; i <= 5; i++) {
+      const r = svc.submitGuess(CHAT, A, 'zzzzz');
+      if (r.type !== 'not_a_word') throw new Error('expected not_a_word');
+      expect(r.failInfo?.count).toBe(i);
+      expect(r.failInfo?.lockedOut).toBe(i === 5);
+    }
+    // locked out: even valid guesses are rejected now
+    const locked = svc.submitGuess(CHAT, A, wrongWords(game.answer, 1)[0]);
+    expect(locked.type).toBe('locked_out');
+
+    // other players are unaffected
+    expect(svc.submitGuess(CHAT, B, wrongWords(game.answer, 1)[0]).type).toBe('accepted');
+
+    // a fresh game resets the counter
+    svc.giveUp(CHAT);
+    svc.startGame(CHAT);
+    const fresh = svc.submitGuess(CHAT, A, 'zzzzz');
+    if (fresh.type !== 'not_a_word') throw new Error('expected not_a_word');
+    expect(fresh.failInfo?.count).toBe(1);
+  });
+
+  it('does not apply to duels or when set to off', () => {
+    const s = svc.settings(CHAT);
+    s.maxFails = 0;
+    svc.saveSettings(CHAT, s);
+    svc.startGame(CHAT);
+    for (let i = 0; i < 8; i++) {
+      const r = svc.submitGuess(CHAT, A, 'zzzzz');
+      if (r.type !== 'not_a_word') throw new Error('expected not_a_word');
+      expect(r.failInfo).toBeUndefined();
+    }
   });
 });
 

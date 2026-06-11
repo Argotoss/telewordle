@@ -68,33 +68,30 @@ function tileStatusColor(status: TileStatus): TileColor {
 }
 
 export function describeCreativity(s: ChatSettings): string {
-  if (!s.creativity.enabled) return 'off';
+  if (!s.creativity.enabled) return 'OFF';
   return s.creativity.mode === 'time'
-    ? `on — words from the last ${humanDuration(s.creativity.seconds)} are banned`
-    : `on — the last ${s.creativity.count} words are banned`;
+    ? `ON — last ${humanDuration(s.creativity.seconds)} banned`
+    : `ON — last ${s.creativity.count} words banned`;
 }
 
+const DIFFICULTY_NOTE: Record<Difficulty, string> = {
+  normal: 'classic rules',
+  hard: 'reuse all 🟩/🟨 hints',
+  superhard: 'reuse all hints, ⬛ letters banned',
+};
+
 export function settingsText(s: ChatSettings): string {
-  return `⚙️ Settings for this chat
+  return `⚙️ Settings
 
-• Bare-word guessing: ${s.bareWord ? 'ON — any valid 5-letter word counts as a guess' : 'OFF — use /guess WORD'}
-• Board style: ${RENDER_LABEL[s.render]}
-• Difficulty: ${DIFFICULTY_LABEL[s.difficulty]}
-• Creativity mode: ${describeCreativity(s)}
-• Max failed attempts (tournaments): ${s.maxFails > 0 ? `${s.maxFails} per turn` : 'unlimited'}
-• Emoji pack: ${s.emojiPack ? `${s.emojiPack.name} (/usepack off to remove)` : 'none — set with /usepack NAME'}
+• Bare words: ${s.bareWord ? 'ON — plain 5-letter words count' : 'OFF — guess with /guess WORD'}
+• Board: ${RENDER_LABEL[s.render]}
+• Difficulty: ${DIFFICULTY_LABEL[s.difficulty]} — ${DIFFICULTY_NOTE[s.difficulty]}
+• Creativity: ${describeCreativity(s)} · /settings creativity 30m | 15w
+• Max fails: ${s.maxFails > 0 ? `${s.maxFails} per player` : 'unlimited'} · /settings fails 5 | off
+• Emoji pack: ${s.emojiPack ? s.emojiPack.name : 'default'} · /usepack NAME | off
 
-Difficulty: hard = every green/yellow hint must be used in later guesses; super hard = additionally, gray letters may not be played again.
-
-Creativity mode bans recently used words (as guesses AND as answers).
-Configure it with:
-  /settings creativity 30m   (time window: s/m/h/d)
-  /settings creativity 15 words   (last N words)
-
-Max failed attempts: in tournaments, rejected guesses (unknown word, hard-mode or creativity violations) by the player at turn count as fails — hit the limit and the turn passes on. Configure with:
-  /settings fails 5   (or: /settings fails off)
-
-Note: bare-word guessing needs the bot to see all messages — disable privacy mode via @BotFather (/setprivacy) or make the bot a group admin.`;
+Fails: rejected guesses lock you out of the game (tournaments: forfeit your turn).
+Bare words need privacy mode off (@BotFather → /setprivacy).`;
 }
 
 export function humanDuration(seconds: number): string {

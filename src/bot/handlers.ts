@@ -2,7 +2,13 @@ import type Database from 'better-sqlite3';
 import { Bot, Context, InlineKeyboard, InputFile } from 'grammy';
 import { GameRow, TournamentRow } from '../db.js';
 import { GameService, MAX_GUESSES, UserRef, roundOrder } from '../game/service.js';
-import { emojiPackFromStickers, escapeHtml, packNameCandidates } from '../render/emoji-pack.js';
+import {
+  emojiPackFromStickers,
+  escapeHtml,
+  packNameCandidates,
+  resolveEmojiPack,
+  type EmojiPackConfig,
+} from '../render/emoji-pack.js';
 import { renderBoardImage, renderBoardSticker, renderKeyboardSticker } from '../render/image.js';
 import { textBoard } from '../render/text.js';
 import {
@@ -76,6 +82,20 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     }
   }
 
+  /** Send a tile-rendered hint; if Telegram rejects the custom emoji, resend with plain tiles. */
+  async function replyTiles(ctx: Context, render: (pack: EmojiPackConfig | null) => string): Promise<void> {
+    const pack = resolveEmojiPack(svc.settings(ctx.chat!.id).emojiPack);
+    if (pack) {
+      try {
+        await ctx.reply(render(pack), { parse_mode: 'HTML' });
+        return;
+      } catch {
+        // bot may not be allowed to send these custom emoji — fall back below
+      }
+    }
+    await ctx.reply(render(null), { parse_mode: 'HTML' });
+  }
+
   async function handleGuess(ctx: Context, word: string, opts: { silentNoGame?: boolean } = {}): Promise<void> {
     const chatId = ctx.chat!.id;
     const user = userRef(ctx);
@@ -83,14 +103,17 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
 
     const withFails = (
       msg: string,
-      failInfo?: { count: number; max: number; forfeited: boolean; nextPlayer: { userName: string } | null },
+      failInfo?: { count: number; max: number; forfeited: boolean; lockedOut: boolean; nextPlayer: { userName: string } | null },
       html = false
     ) => {
       if (!failInfo) return msg;
-      msg += `\n(${failInfo.count}/${failInfo.max} failed attempts this turn)`;
+      msg += `\n(${failInfo.count}/${failInfo.max} failed attempts)`;
       if (failInfo.forfeited && failInfo.nextPlayer) {
         const name = html ? escapeHtml(failInfo.nextPlayer.userName) : failInfo.nextPlayer.userName;
         msg += `\n🚷 Turn forfeited! Next up: ${name}`;
+      }
+      if (failInfo.lockedOut) {
+        msg += `\n🚷 That was your last attempt — you're out for the rest of this game!`;
       }
       return msg;
     };
@@ -104,22 +127,18 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
         return;
       case 'already_guessed': {
         const game = svc.activeGame(chatId)!;
-        const pack = svc.settings(chatId).emojiPack;
-        await ctx.reply(withFails(alreadyGuessedText(out.word, game.answer, pack), out.failInfo, true), {
-          parse_mode: 'HTML',
-        });
+        await replyTiles(ctx, (pack) => withFails(alreadyGuessedText(out.word, game.answer, pack), out.failInfo, true));
         return;
       }
       case 'creativity_blocked':
         await ctx.reply(withFails(`🚫 Creativity mode: ${out.word.toUpperCase()} was used recently here. Try something fresh!`, out.failInfo));
         return;
-      case 'hard_mode_violation': {
-        const pack = svc.settings(chatId).emojiPack;
-        await ctx.reply(withFails(hardModeViolationText(out.violation, out.superHard, pack), out.failInfo, true), {
-          parse_mode: 'HTML',
-        });
+      case 'hard_mode_violation':
+        await replyTiles(ctx, (pack) => withFails(hardModeViolationText(out.violation, out.superHard, pack), out.failInfo, true));
         return;
-      }
+      case 'locked_out':
+        await ctx.reply(`🚷 ${user.name}, you've used all ${out.max} failed attempts — sit this game out.`);
+        return;
       case 'not_your_turn':
         await ctx.reply(`⏳ Not so fast — it's ${out.currentPlayer.userName}'s turn.`);
         return;
@@ -232,7 +251,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       const s = svc.settings(ctx.chat.id);
       s.emojiPack = null;
       svc.saveSettings(ctx.chat.id, s);
-      return void (await ctx.reply('✅ Emoji pack removed — hint messages use plain emoji again.'));
+      return void (await ctx.reply('✅ Emoji pack reset — hint messages use the default tiles again.'));
     }
 
     let lastError: unknown = null;

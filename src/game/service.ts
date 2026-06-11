@@ -45,11 +45,16 @@ export function pointsForGuessNumber(n: number): number {
   return MAX_GUESSES + 1 - n; // guess #1 → 6 pts … guess #6 → 1 pt
 }
 
-/** Tournament anti-spam: rejected attempts this turn, and whether the turn was forfeited. */
+/**
+ * Anti-spam fail tracking for rejected guesses.
+ * Tournaments: counts per turn; hitting the limit forfeits the turn.
+ * Normal group games: counts per player per game; hitting the limit locks that player out.
+ */
 export interface FailInfo {
   count: number;
   max: number;
   forfeited: boolean;
+  lockedOut: boolean;
   nextPlayer: TournamentPlayer | null;
 }
 
@@ -59,6 +64,7 @@ export type GuessOutcome =
   | { type: 'creativity_blocked'; word: string; failInfo?: FailInfo }
   | { type: 'hard_mode_violation'; word: string; violation: HardModeViolation; superHard: boolean; failInfo?: FailInfo }
   | { type: 'already_guessed'; word: string; failInfo?: FailInfo }
+  | { type: 'locked_out'; max: number }
   | { type: 'not_your_turn'; currentPlayer: TournamentPlayer }
   | {
       type: 'accepted';
@@ -147,8 +153,15 @@ export class GameService {
         tournament = null;
       }
     }
+
+    // normal group games: players who burned all their failed attempts are out for this game
+    const lockoutApplies = !tournament && !isDuel && settings.maxFails > 0;
+    if (lockoutApplies && (game.fail_counts[String(user.id)] ?? 0) >= settings.maxFails) {
+      return { type: 'locked_out', max: settings.maxFails };
+    }
+
     const fail = <T extends Extract<GuessOutcome, { failInfo?: FailInfo }>>(outcome: T): T =>
-      this.countFailedAttempt(tournament, settings.maxFails, outcome);
+      this.countFailedAttempt(tournament, lockoutApplies ? game : null, user, settings.maxFails, outcome);
 
     if (!isValidWord(word)) return fail({ type: 'not_a_word', word });
     if (game.guesses.some((g) => g.word === word)) return fail({ type: 'already_guessed', word });
@@ -264,25 +277,42 @@ export class GameService {
   }
 
   /**
-   * A rejected guess by the player at turn counts as a failed attempt.
-   * Reaching the chat's max-fails limit forfeits the turn (maxFails 0 = unlimited).
+   * A rejected guess counts as a failed attempt (maxFails 0 = unlimited).
+   * Tournaments: counted per turn; reaching the limit forfeits the turn.
+   * Normal games: counted per player; reaching the limit locks them out of this game.
    */
   private countFailedAttempt<T extends Extract<GuessOutcome, { failInfo?: FailInfo }>>(
     t: TournamentRow | null,
+    game: GameRow | null,
+    user: UserRef,
     maxFails: number,
     outcome: T
   ): T {
-    if (!t || maxFails <= 0) return outcome;
-    t.fail_count += 1;
-    const forfeited = t.fail_count >= maxFails;
-    let nextPlayer: TournamentPlayer | null = null;
-    if (forfeited) {
-      t.turn_idx = (t.turn_idx + 1) % t.players.length;
-      t.fail_count = 0;
-      nextPlayer = roundOrder(t.players, t.current_round)[t.turn_idx];
+    if (maxFails <= 0) return outcome;
+    if (t) {
+      t.fail_count += 1;
+      const forfeited = t.fail_count >= maxFails;
+      let nextPlayer: TournamentPlayer | null = null;
+      if (forfeited) {
+        t.turn_idx = (t.turn_idx + 1) % t.players.length;
+        t.fail_count = 0;
+        nextPlayer = roundOrder(t.players, t.current_round)[t.turn_idx];
+      }
+      updateTournament(this.db, t);
+      outcome.failInfo = {
+        count: forfeited ? maxFails : t.fail_count,
+        max: maxFails,
+        forfeited,
+        lockedOut: false,
+        nextPlayer,
+      };
+    } else if (game) {
+      const key = String(user.id);
+      const count = (game.fail_counts[key] ?? 0) + 1;
+      game.fail_counts[key] = count;
+      updateGame(this.db, game);
+      outcome.failInfo = { count, max: maxFails, forfeited: false, lockedOut: count >= maxFails, nextPlayer: null };
     }
-    updateTournament(this.db, t);
-    outcome.failInfo = { count: forfeited ? maxFails : t.fail_count, max: maxFails, forfeited, nextPlayer };
     return outcome;
   }
 
