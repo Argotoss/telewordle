@@ -321,6 +321,76 @@ describe('max fails in normal games', () => {
   });
 });
 
+describe('anti-lock: disband and auto-expiry', () => {
+  it('disbandBlocking clears a lobby, an active tournament game, or a normal game', () => {
+    expect(svc.disbandBlocking(CHAT)).toBeNull();
+
+    const t0 = svc.createTournament(CHAT, 2, A)!;
+    svc.joinTournament(t0.id, B);
+    svc.startTournament(t0.id);
+    const res = svc.disbandBlocking(CHAT)!;
+    expect(res.tournamentCancelled).toBe(true);
+    expect(res.answer).toBeTruthy();
+    expect(svc.openTournament(CHAT)).toBeNull();
+    expect(svc.activeGame(CHAT)).toBeNull();
+
+    const game = svc.startGame(CHAT)!;
+    const res2 = svc.disbandBlocking(CHAT)!;
+    expect(res2.tournamentCancelled).toBe(false);
+    expect(res2.answer).toBe(game.answer);
+  });
+
+  it('expires a stale lobby and a stale active tournament', () => {
+    svc.createTournament(CHAT, 2, A);
+    expect(svc.expireStaleTournament(CHAT)).toBeNull(); // fresh
+    expect(svc.expireStaleTournament(CHAT, Date.now() + 4 * 3600_000)?.kind).toBe('lobby');
+    expect(svc.openTournament(CHAT)).toBeNull();
+
+    const t1 = svc.createTournament(CHAT, 2, A)!;
+    svc.joinTournament(t1.id, B);
+    svc.startTournament(t1.id);
+    const exp = svc.expireStaleTournament(CHAT, Date.now() + 4 * 3600_000);
+    expect(exp?.kind).toBe('active');
+    expect(exp?.answer).toBeTruthy();
+    expect(svc.activeGame(CHAT)).toBeNull();
+  });
+
+  it('expires a long-untouched regular game, but not a fresh one', () => {
+    const game = svc.startGame(CHAT)!;
+    expect(svc.expireStaleGame(CHAT)).toBeNull();
+    const expired = svc.expireStaleGame(CHAT, Date.now() + 25 * 3600_000);
+    expect(expired?.answer).toBe(game.answer);
+    expect(svc.activeGame(CHAT)).toBeNull();
+  });
+
+  it('cancels a tournament after everyone gets timer-skipped twice', () => {
+    const t0 = svc.createTournament(CHAT, 1, A)!;
+    svc.joinTournament(t0.id, B);
+    svc.startTournament(t0.id);
+    for (let i = 0; i < 3; i++) {
+      const r = svc.forfeitTurnByTimeout(CHAT)!;
+      expect(r.abandoned).toBe(false);
+    }
+    const final = svc.forfeitTurnByTimeout(CHAT)!; // 4th skip = 2 full cycles of 2 players
+    expect(final.abandoned).toBe(true);
+    expect(final.answer).toBeTruthy();
+    expect(svc.openTournament(CHAT)).toBeNull();
+    expect(svc.activeGame(CHAT)).toBeNull();
+  });
+
+  it('a guess resets the abandonment counter', () => {
+    const t0 = svc.createTournament(CHAT, 1, A)!;
+    svc.joinTournament(t0.id, B);
+    const started = svc.startTournament(t0.id) as Exclude<ReturnType<typeof svc.startTournament>, 'too_few' | null>;
+    forceAnswer(started.game.id, 'water');
+    svc.forfeitTurnByTimeout(CHAT); // A skipped → B's turn
+    svc.forfeitTurnByTimeout(CHAT); // B skipped → A's turn
+    svc.forfeitTurnByTimeout(CHAT); // A skipped → B's turn (3 skips)
+    expect(svc.submitGuess(CHAT, B, 'crane').type).toBe('accepted'); // resets idle_skips
+    for (let i = 0; i < 3; i++) expect(svc.forfeitTurnByTimeout(CHAT)!.abandoned).toBe(false);
+  });
+});
+
 describe('duels', () => {
   it('full duel: fewer guesses wins, group stats recorded', () => {
     const GROUP = -200;

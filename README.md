@@ -64,6 +64,10 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
   /settings creativity 15 words
   ```
 
+## Never locked
+
+If a game or tournament is blocking the chat, `/play`, `/daily`, and `/tournament` show what's running and how long it's been idle, with a **🗑 Disband & start new** button anyone can press — no waiting for whoever started it. As a backstop, abandoned lobbies/tournaments are swept automatically after 3 hours of inactivity (games after 24h), and an active tournament cancels itself if every player lets the turn timer expire twice in a row.
+
 ## Tournaments
 
 `/tournament 3` opens a lobby (join or quit via buttons, creator presses Start). Players guess strictly in turn order, and the order rotates every round so nobody is always first. Solving the word scores points by how early it fell: guess #1 = 6 pts … guess #6 = 1 pt. After the last round the bot posts the scoreboard and the winner.

@@ -102,6 +102,8 @@ export interface TournamentRow {
   scores: Record<string, number>; // userId -> points
   turn_idx: number; // index into rotated order of the current round
   fail_count: number; // rejected attempts by the current player this turn
+  last_activity: number; // last human action (create/join/guess) — drives auto-expiry
+  idle_skips: number; // consecutive timer forfeits with no guess in between
   created_by: number;
 }
 
@@ -196,6 +198,8 @@ export function openDb(path: string): Database.Database {
       scores TEXT NOT NULL DEFAULT '{}',
       turn_idx INTEGER NOT NULL DEFAULT 0,
       fail_count INTEGER NOT NULL DEFAULT 0,
+      last_activity INTEGER NOT NULL DEFAULT 0,
+      idle_skips INTEGER NOT NULL DEFAULT 0,
       created_by INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS duels (
@@ -252,6 +256,10 @@ export function openDb(path: string): Database.Database {
   }
   if (!gCols.some((c) => c.name === 'hints')) {
     db.exec("ALTER TABLE games ADD COLUMN hints TEXT NOT NULL DEFAULT '[]'");
+  }
+  if (!tCols.some((c) => c.name === 'last_activity')) {
+    db.exec('ALTER TABLE tournaments ADD COLUMN last_activity INTEGER NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE tournaments ADD COLUMN idle_skips INTEGER NOT NULL DEFAULT 0');
   }
   const sCols = db.prepare('PRAGMA table_info(stats)').all() as { name: string }[];
   if (!sCols.some((c) => c.name === 'daily_played')) {
@@ -433,15 +441,25 @@ export function createTournament(
   createdBy: number
 ): TournamentRow {
   const info = db
-    .prepare('INSERT INTO tournaments (chat_id, rounds, created_by) VALUES (?, ?, ?)')
-    .run(chatId, rounds, createdBy);
+    .prepare('INSERT INTO tournaments (chat_id, rounds, created_by, last_activity) VALUES (?, ?, ?, ?)')
+    .run(chatId, rounds, createdBy, Date.now());
   return getTournament(db, Number(info.lastInsertRowid))!;
 }
 
 export function updateTournament(db: Database.Database, t: TournamentRow): void {
   db.prepare(
-    `UPDATE tournaments SET current_round = ?, status = ?, players = ?, scores = ?, turn_idx = ?, fail_count = ? WHERE id = ?`
-  ).run(t.current_round, t.status, JSON.stringify(t.players), JSON.stringify(t.scores), t.turn_idx, t.fail_count, t.id);
+    `UPDATE tournaments SET current_round = ?, status = ?, players = ?, scores = ?, turn_idx = ?, fail_count = ?, last_activity = ?, idle_skips = ? WHERE id = ?`
+  ).run(
+    t.current_round,
+    t.status,
+    JSON.stringify(t.players),
+    JSON.stringify(t.scores),
+    t.turn_idx,
+    t.fail_count,
+    t.last_activity,
+    t.idle_skips,
+    t.id
+  );
 }
 
 // ---------- duels ----------

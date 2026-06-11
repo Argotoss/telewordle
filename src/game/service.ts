@@ -32,6 +32,12 @@ import { getDailyGame, recordDailyResult } from '../db.js';
 
 export const MAX_GUESSES = 6;
 
+// Backstop auto-expiry. The primary unblock flow is the "disband & start new"
+// button anyone can press; these only sweep up things nobody ever came back for.
+export const LOBBY_IDLE_MS = 3 * 60 * 60_000; // lobby with no joins/start
+export const TOURNAMENT_IDLE_MS = 3 * 60 * 60_000; // active tournament with no human guess
+export const GAME_IDLE_MS = 24 * 60 * 60_000; // regular game with no guesses
+
 /** Effective try limit for a game: every /hint burned one of the six tries. */
 export function maxGuessesFor(game: GameRow): number {
   return MAX_GUESSES - (game.hints?.length ?? 0);
@@ -268,17 +274,101 @@ export class GameService {
     return { type: 'ok', letter, triesLeft: maxGuessesFor(game) - game.guesses.length, game };
   }
 
-  /** Skip the current tournament player's turn (turn timer expired). */
-  forfeitTurnByTimeout(chatId: number): { t: TournamentRow; skipped: TournamentPlayer; nextPlayer: TournamentPlayer } | null {
+  /**
+   * Skip the current tournament player's turn (turn timer expired).
+   * If everyone has been skipped twice in a row without a single guess,
+   * the tournament is considered abandoned and cancelled.
+   */
+  forfeitTurnByTimeout(
+    chatId: number
+  ): { t: TournamentRow; skipped: TournamentPlayer; nextPlayer: TournamentPlayer; abandoned: boolean; answer?: string } | null {
     const t = getOpenTournament(this.db, chatId);
     if (!t || t.status !== 'active') return null;
     const order = roundOrder(t.players, t.current_round);
     const skipped = order[t.turn_idx % order.length];
     t.turn_idx = (t.turn_idx + 1) % t.players.length;
     t.fail_count = 0;
+    t.idle_skips += 1;
+
+    if (t.idle_skips >= t.players.length * 2) {
+      t.status = 'cancelled';
+      updateTournament(this.db, t);
+      const answer = this.endTournamentGame(t);
+      return { t, skipped, nextPlayer: skipped, abandoned: true, answer };
+    }
     updateTournament(this.db, t);
     const nextPlayer = roundOrder(t.players, t.current_round)[t.turn_idx];
-    return { t, skipped, nextPlayer };
+    return { t, skipped, nextPlayer, abandoned: false };
+  }
+
+  /**
+   * Lazily expire whatever is blocking the chat past its idle limit:
+   * a lobby nobody started, or an active tournament nobody plays.
+   */
+  expireStaleTournament(chatId: number, now = Date.now()): { kind: 'lobby' | 'active'; t: TournamentRow; answer?: string } | null {
+    const t = getOpenTournament(this.db, chatId);
+    if (!t) return null;
+    if (t.status === 'joining' && now - t.last_activity > LOBBY_IDLE_MS) {
+      t.status = 'cancelled';
+      updateTournament(this.db, t);
+      return { kind: 'lobby', t };
+    }
+    if (t.status === 'active' && now - t.last_activity > TOURNAMENT_IDLE_MS) {
+      t.status = 'cancelled';
+      updateTournament(this.db, t);
+      return { kind: 'active', t, answer: this.endTournamentGame(t) };
+    }
+    return null;
+  }
+
+  /**
+   * Disband whatever is blocking the chat — open tournament (any state) and/or
+   * the active game. Anyone may trigger this via the disband button; that is
+   * the point: the original creator might be long gone.
+   */
+  disbandBlocking(chatId: number): { answer?: string; tournamentCancelled: boolean } | null {
+    let tournamentCancelled = false;
+    const t = getOpenTournament(this.db, chatId);
+    if (t) {
+      t.status = 'cancelled';
+      updateTournament(this.db, t);
+      tournamentCancelled = true;
+    }
+    let answer: string | undefined;
+    const game = getActiveGame(this.db, chatId);
+    if (game) {
+      game.status = 'lost';
+      game.finished_at = Date.now();
+      updateGame(this.db, game);
+      if (game.kind !== 'duel') recordUsedWord(this.db, chatId, game.answer);
+      answer = game.answer;
+    }
+    if (!t && !game) return null;
+    return { answer, tournamentCancelled };
+  }
+
+  /** Expire a regular (non-tournament) game that nobody has touched for hours. */
+  expireStaleGame(chatId: number, now = Date.now()): { answer: string } | null {
+    const game = getActiveGame(this.db, chatId);
+    if (!game || game.kind === 'tournament') return null;
+    const lastTouch = game.guesses.length ? game.guesses[game.guesses.length - 1].ts : game.started_at;
+    if (now - lastTouch <= GAME_IDLE_MS) return null;
+    game.status = 'lost';
+    game.finished_at = now;
+    updateGame(this.db, game);
+    if (game.kind !== 'duel') recordUsedWord(this.db, chatId, game.answer);
+    return { answer: game.answer };
+  }
+
+  /** End the active game of a cancelled tournament, revealing its answer. */
+  private endTournamentGame(t: TournamentRow): string | undefined {
+    const game = getActiveGame(this.db, t.chat_id);
+    if (!game || game.tournament_id !== t.id) return undefined;
+    game.status = 'lost';
+    game.finished_at = Date.now();
+    updateGame(this.db, game);
+    recordUsedWord(this.db, t.chat_id, game.answer);
+    return game.answer;
   }
 
   // ---------- tournaments ----------
@@ -297,6 +387,7 @@ export class GameService {
     if (t.status !== 'joining') return 'closed';
     if (t.players.some((p) => p.userId === user.id)) return 'already_in';
     t.players.push({ userId: user.id, userName: user.name });
+    t.last_activity = Date.now();
     updateTournament(this.db, t);
     return getTournament(this.db, t.id);
   }
@@ -307,6 +398,7 @@ export class GameService {
     if (t.status !== 'joining') return 'closed';
     if (!t.players.some((p) => p.userId === userId)) return 'not_in';
     t.players = t.players.filter((p) => p.userId !== userId);
+    t.last_activity = Date.now();
     updateTournament(this.db, t);
     return getTournament(this.db, t.id);
   }
@@ -319,6 +411,7 @@ export class GameService {
     t.status = 'active';
     t.current_round = 1;
     t.turn_idx = 0;
+    t.last_activity = Date.now();
     for (const p of t.players) t.scores[String(p.userId)] = 0;
     updateTournament(this.db, t);
     const game = this.newTournamentGame(t);
@@ -406,6 +499,8 @@ export class GameService {
       t.scores[String(user.id)] = (t.scores[String(user.id)] ?? 0) + pointsAwarded;
     }
     t.fail_count = 0; // an accepted guess always hands over a fresh turn
+    t.last_activity = Date.now();
+    t.idle_skips = 0;
 
     if (roundEnded) {
       if (t.current_round >= t.rounds) {

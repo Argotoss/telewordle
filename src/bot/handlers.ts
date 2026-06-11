@@ -39,6 +39,7 @@ import {
   settingsText,
   standingsText,
   statsText,
+  timeAgo,
   topText,
   turnOrderText,
 } from './format.js';
@@ -157,6 +158,14 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
         if (!sameTurn()) return;
         const res = svc.forfeitTurnByTimeout(chatId);
         if (!res) return;
+        if (res.abandoned) {
+          clearTurnTimers(chatId);
+          const reveal = res.answer ? ` The word was ${res.answer.toUpperCase()}.` : '';
+          await bot.api
+            .sendMessage(chatId, `💤 Nobody is playing — tournament cancelled.${reveal} Start fresh anytime with /tournament.`)
+            .catch(() => {});
+          return;
+        }
         await bot.api
           .sendMessage(chatId, `⏱ Time's up, ${res.skipped.userName}! 🚷 Turn passes to ${res.nextPlayer.userName}.`)
           .catch(() => {});
@@ -175,6 +184,23 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const hhmm = nowHHMM();
     for (const chatId of allChatIds(db)) {
       try {
+        // backstop: sweep up long-abandoned tournaments and games
+        const staleT = svc.expireStaleTournament(chatId);
+        if (staleT) {
+          clearTurnTimers(chatId);
+          const reveal = staleT.answer ? ` The word was ${staleT.answer.toUpperCase()}.` : '';
+          await bot.api
+            .sendMessage(chatId, `🧹 Cleaned up an abandoned tournament${staleT.kind === 'lobby' ? ' lobby' : ''}.${reveal}`)
+            .catch(() => {});
+        }
+        const staleG = svc.expireStaleGame(chatId);
+        if (staleG) {
+          boardMsgs.delete(chatId);
+          await bot.api
+            .sendMessage(chatId, `🧹 Cleaned up an abandoned game — the word was ${staleG.answer.toUpperCase()}.`)
+            .catch(() => {});
+        }
+
         if (svc.settings(chatId).dailyTime !== hhmm) continue;
         const res = svc.startDaily(chatId, todayStr());
         if (res === 'done' || res === 'busy' || !res.created) continue;
@@ -261,6 +287,46 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
         .editMessageText(lobbyTextPlain(t) + suffix, { reply_markup: started ? undefined : lobbyKeyboardPlain(t) })
         .catch(() => {});
     }
+  }
+
+  // ---------- disband flow: never let an abandoned game lock the chat ----------
+
+  function describeBlocker(chatId: number): string | null {
+    const t = svc.openTournament(chatId);
+    if (t && t.status === 'joining') {
+      return `🏆 A tournament lobby is open — ${t.players.length} player${t.players.length === 1 ? '' : 's'}, last activity ${timeAgo(t.last_activity)}.`;
+    }
+    if (t && t.status === 'active') {
+      return `🏆 A tournament is in progress — round ${t.current_round}/${t.rounds}, last activity ${timeAgo(t.last_activity)}.`;
+    }
+    const g = svc.activeGame(chatId);
+    if (g) {
+      const last = g.guesses[g.guesses.length - 1];
+      const activity = last ? `last guess ${timeAgo(last.ts)} by ${last.userName}` : `started ${timeAgo(g.started_at)}, no guesses yet`;
+      return `🎮 A game is in progress — ${g.guesses.length}/${maxGuessesFor(g)} guesses, ${activity}.`;
+    }
+    return null;
+  }
+
+  /** If something blocks the chat, show what it is + a disband button. Returns true when blocked. */
+  async function offerDisband(ctx: Context, action: string): Promise<boolean> {
+    const desc = describeBlocker(ctx.chat!.id);
+    if (!desc) return false;
+    await ctx.reply(`${desc}\n\nDisband it and start fresh?`, {
+      reply_markup: new InlineKeyboard()
+        .text('🗑 Disband & start new', `disband:${action}`)
+        .text('✋ Keep it', 'disband:keep'),
+    });
+    return true;
+  }
+
+  async function startNewGameFlow(api: Api, chatId: number): Promise<boolean> {
+    const game = svc.startGame(chatId);
+    if (!game) return false;
+    const s = svc.settings(chatId);
+    const hint = s.bareWord ? 'Type any 5-letter word to guess.' : 'Guess with /guess WORD.';
+    await sendBoard(api, chatId, game, `🎮 New game! I picked a 5-letter word — you have ${MAX_GUESSES} tries. ${hint}`);
+    return true;
   }
 
   /** Send a tile-rendered hint; if Telegram rejects the custom emoji, resend with plain tiles. */
@@ -431,16 +497,8 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
   bot.command('help', (ctx) => ctx.reply(HELP_TEXT));
 
   bot.command('play', async (ctx) => {
-    const chatId = ctx.chat.id;
-    const t = svc.openTournament(chatId);
-    if (t) return void (await ctx.reply('A tournament is open in this chat — finish it or /tournament cancel first.'));
-    const game = svc.startGame(chatId);
-    if (!game) return void (await ctx.reply('A game is already running! Check /board or /giveup to abandon it.'));
-    const s = svc.settings(chatId);
-    const hint = s.bareWord
-      ? 'Type any 5-letter word to guess.'
-      : 'Guess with /guess WORD.';
-    await sendBoard(ctx.api, chatId, game, `🎮 New game! I picked a 5-letter word — you have ${MAX_GUESSES} tries. ${hint}`);
+    if (await offerDisband(ctx, 'play')) return;
+    await startNewGameFlow(ctx.api, ctx.chat.id);
   });
 
   bot.command(['guess', 'w'], async (ctx) => {
@@ -610,7 +668,10 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     }
 
     const res = svc.startDaily(chatId, todayStr());
-    if (res === 'busy') return void (await ctx.reply('Finish the current game first (/board or /giveup), then /daily.'));
+    if (res === 'busy') {
+      await offerDisband(ctx, 'daily');
+      return;
+    }
     if (res === 'done') {
       const g = svc.dailyGame(chatId, todayStr())!;
       return void (await ctx.reply(`This chat already finished today's daily!\n\n${dailyShareText(g)}`));
@@ -724,7 +785,10 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     if (!Number.isFinite(rounds) || rounds < 1 || rounds > 25) {
       return void (await ctx.reply('Usage: /tournament N — start a tournament of N rounds (1–25), e.g. /tournament 3'));
     }
-    if (svc.activeGame(chatId)) return void (await ctx.reply('Finish the current game first (/giveup to abandon it).'));
+    if (svc.activeGame(chatId)) {
+      await offerDisband(ctx, `t${rounds}`);
+      return;
+    }
     const t = svc.createTournament(chatId, rounds, userRef(ctx));
     if (!t) return void (await ctx.reply('Could not create a tournament right now.'));
     await sendLobby(ctx, t);
@@ -758,6 +822,45 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     svc.saveSettings(chatId, s);
     await ctx.editMessageText(settingsText(s), { reply_markup: settingsKeyboard(svc, chatId) });
     await ctx.answerCallbackQuery('Saved!');
+  });
+
+  bot.callbackQuery(/^disband:(.+)$/, async (ctx) => {
+    const action = ctx.match[1];
+    const chatId = ctx.chat!.id;
+    if (action === 'keep') {
+      await ctx.answerCallbackQuery('Keeping it!');
+      await ctx.deleteMessage().catch(() => {});
+      return;
+    }
+    const res = svc.disbandBlocking(chatId);
+    clearTurnTimers(chatId);
+    boardMsgs.delete(chatId);
+    await ctx.answerCallbackQuery(res ? 'Disbanded!' : 'Nothing left to disband.');
+    await ctx.deleteMessage().catch(() => {});
+    if (res) {
+      let msg = res.tournamentCancelled ? '🗑 Tournament disbanded.' : '🗑 Game disbanded.';
+      if (res.answer) msg += ` The word was ${res.answer.toUpperCase()}.`;
+      await ctx.api.sendMessage(chatId, msg).catch(() => {});
+    }
+
+    if (action === 'play') {
+      await startNewGameFlow(ctx.api, chatId);
+    } else if (action === 'daily') {
+      const r = svc.startDaily(chatId, todayStr());
+      if (r === 'done') {
+        await ctx.api.sendMessage(chatId, "Today's daily was already finished here.").catch(() => {});
+      } else if (r !== 'busy') {
+        await sendBoard(
+          ctx.api,
+          chatId,
+          r.game,
+          `☀️ Daily puzzle — ${todayStr()}. Same word for everyone today, 6 tries. Streaks are on the line!`
+        );
+      }
+    } else if (/^t\d+$/.test(action)) {
+      const t = svc.createTournament(chatId, parseInt(action.slice(1), 10), userRef(ctx));
+      if (t) await sendLobby(ctx, t);
+    }
   });
 
   bot.callbackQuery(/^t:join:(\d+)$/, async (ctx) => {
