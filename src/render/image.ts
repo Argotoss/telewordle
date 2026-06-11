@@ -3,7 +3,7 @@ import { GameRow } from '../db.js';
 import { getLanguage } from '../engine/languages.js';
 import { keyboardStatus, scoreGuess, TileStatus } from '../engine/score.js';
 import { maxGuessesFor } from '../game/service.js';
-import { shortName, shouldShowNames } from './text.js';
+import { shouldShowNames } from './text.js';
 
 // Classic Wordle palette
 const COLORS = {
@@ -44,7 +44,6 @@ const STICKER_PAD_Y = 18;
 const BOARD_ALIGN_KEY_COUNT = 8; // board scaled to ~8 keys wide, like the classic layout
 
 const BOARD_W = BOARD_COLS * TILE + (BOARD_COLS - 1) * TILE_GAP;
-const NAME_COL = 118;
 
 function boardRows(game: GameRow): number {
   return maxGuessesFor(game);
@@ -54,15 +53,25 @@ function boardHeight(rows: number): number {
   return rows * TILE + (rows - 1) * TILE_GAP;
 }
 
-/** Total board block width: the grid plus the names column when names are shown. */
-function boardBlockWidth(game: GameRow): number {
-  return BOARD_W + (shouldShowNames(game) ? NAME_COL : 0);
+/** Draw text left-aligned at (x, y), shrinking the font until it fits maxWidth. */
+function drawFittedText(ctx: SKRSContext2D, text: string, x: number, y: number, maxWidth: number): void {
+  let size = 18;
+  ctx.font = `${size}px ${FONT}`;
+  while (size > 9 && ctx.measureText(text).width > maxWidth) {
+    size -= 1;
+    ctx.font = `${size}px ${FONT}`;
+  }
+  ctx.fillText(text, x, y, maxWidth);
 }
 
-function drawBoard(ctx: SKRSContext2D, game: GameRow, left: number, top: number): void {
+/**
+ * The board grid is always drawn at `left` regardless of names — names live in
+ * the margin to the right of it, never pushing or resizing the board.
+ */
+function drawBoard(ctx: SKRSContext2D, game: GameRow, left: number, top: number, nameMaxWidth = 0): void {
   const scores: TileStatus[][] = game.guesses.map((g) => scoreGuess(game.answer, g.word));
   const rows = boardRows(game);
-  const names = shouldShowNames(game);
+  const names = shouldShowNames(game) && nameMaxWidth > 14;
   for (let row = 0; row < rows; row++) {
     for (let col = 0; col < BOARD_COLS; col++) {
       const x = left + col * (TILE + TILE_GAP);
@@ -85,8 +94,8 @@ function drawBoard(ctx: SKRSContext2D, game: GameRow, left: number, top: number)
       ctx.save();
       ctx.textAlign = 'left';
       ctx.fillStyle = COLORS.keyUnused;
-      ctx.font = `18px ${FONT}`;
-      ctx.fillText(shortName(game.guesses[row].userName), left + BOARD_W + 16, top + row * (TILE + TILE_GAP) + TILE / 2 + 1);
+      const firstName = game.guesses[row].userName.split(/\s+/)[0] ?? '';
+      drawFittedText(ctx, firstName, left + BOARD_W + 10, top + row * (TILE + TILE_GAP) + TILE / 2 + 1, nameMaxWidth);
       ctx.restore();
     }
   }
@@ -113,15 +122,14 @@ function drawKeyboard(ctx: SKRSContext2D, game: GameRow, width: number, top: num
   });
 }
 
-/** Classic single PNG: board with the keyboard underneath. */
+/** Classic single PNG: board with the keyboard underneath. The board is always centered. */
 export function renderBoardImage(game: GameRow): Buffer {
   const rows = keyRows(game);
   const maxKeys = Math.max(...rows.map((r) => r.length));
   const kbW = maxKeys * KEY_W + (maxKeys - 1) * KEY_GAP;
   const kbH = rows.length * KEY_H + (rows.length - 1) * KEY_GAP;
-  const blockW = boardBlockWidth(game);
   const boardH = boardHeight(boardRows(game));
-  const width = Math.max(blockW, kbW) + PAD * 2;
+  const width = Math.max(BOARD_W, kbW) + PAD * 2;
   const height = PAD + boardH + 30 + kbH + PAD;
 
   const canvas = createCanvas(width, height);
@@ -131,25 +139,28 @@ export function renderBoardImage(game: GameRow): Buffer {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  drawBoard(ctx, game, (width - blockW) / 2, PAD);
+  const boardLeft = (width - BOARD_W) / 2;
+  const nameMaxWidth = width - boardLeft - BOARD_W - 14; // names live in the right margin
+  drawBoard(ctx, game, boardLeft, PAD, nameMaxWidth);
   drawKeyboard(ctx, game, width, PAD + boardH + 30);
 
   return canvas.toBuffer('image/png');
 }
 
-/** Transparent-background board as a 512px-wide WebP sticker. */
+/** Transparent-background board as a 512px-wide WebP sticker. The board is always centered. */
 export function renderBoardSticker(game: GameRow): Buffer {
-  const blockW = boardBlockWidth(game);
-  const source = createCanvas(blockW, boardHeight(boardRows(game)));
+  const contentWidth = BOARD_ALIGN_KEY_COUNT * KEY_W + (BOARD_ALIGN_KEY_COUNT - 1) * KEY_GAP;
+  const scale = contentWidth / BOARD_W;
+  // symmetric side margins sized so the scaled canvas fills the full sticker width
+  const side = Math.floor((STICKER_WIDTH / scale - BOARD_W) / 2);
+  const sourceW = BOARD_W + side * 2;
+  const source = createCanvas(sourceW, boardHeight(boardRows(game)));
   const ctx = source.getContext('2d');
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  drawBoard(ctx, game, 0, 0);
+  drawBoard(ctx, game, side, 0, side - 10);
 
-  const alignKeys = shouldShowNames(game) ? 10 : BOARD_ALIGN_KEY_COUNT;
-  const contentWidth = alignKeys * KEY_W + (alignKeys - 1) * KEY_GAP;
-  const scale = contentWidth / source.width;
-  const width = Math.round(source.width * scale);
+  const width = Math.round(sourceW * scale);
   const height = Math.round(source.height * scale);
   const sticker = createCanvas(STICKER_WIDTH, height + STICKER_PAD_Y * 2);
   const sctx = sticker.getContext('2d');
