@@ -2,7 +2,7 @@
 // equivalent, so the visual output can be checked without a Telegram token.
 import { writeFileSync } from 'node:fs';
 import { GameRow } from '../src/db.js';
-import { renderBoardImage } from '../src/render/image.js';
+import { renderBoardImage, renderBoardSticker, renderKeyboardSticker } from '../src/render/image.js';
 import { textBoard } from '../src/render/text.js';
 
 const mk = (word: string, userId: number, userName: string) => ({ word, userId, userName, ts: 0 });
@@ -20,8 +20,12 @@ const game: GameRow = {
   duel_id: null,
 };
 
-const out = '/tmp/telewordle-sample.png';
-writeFileSync(out, renderBoardImage(game));
-console.log(`wrote ${out}`);
+const pngOut = '/tmp/telewordle-sample.png';
+const boardWebpOut = '/tmp/telewordle-board-sample.webp';
+const keyboardWebpOut = '/tmp/telewordle-keyboard-sample.webp';
+writeFileSync(pngOut, renderBoardImage(game));
+writeFileSync(boardWebpOut, renderBoardSticker(game));
+writeFileSync(keyboardWebpOut, renderKeyboardSticker(game));
+console.log(`wrote ${pngOut}, ${boardWebpOut}, ${keyboardWebpOut}`);
 console.log('--- text mode ---');
 console.log(textBoard(game));

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
+import { isEmojiPackConfig, type EmojiPackConfig } from './render/emoji-pack.js';
 
-export type RenderMode = 'image' | 'text';
+export type RenderMode = 'image' | 'sticker' | 'text';
 
 export interface CreativitySettings {
   enabled: boolean;
@@ -20,6 +21,8 @@ export interface ChatSettings {
   /** Tournaments: rejected guess attempts allowed per turn before it is forfeited. 0 = unlimited. */
   maxFails: number;
   creativity: CreativitySettings;
+  /** Custom emoji tiles for hint messages (set via /usepack), or null for plain emoji. */
+  emojiPack: EmojiPackConfig | null;
 }
 
 export const DEFAULT_SETTINGS: ChatSettings = {
@@ -28,6 +31,7 @@ export const DEFAULT_SETTINGS: ChatSettings = {
   difficulty: 'normal',
   maxFails: 5,
   creativity: { enabled: true, mode: 'time', seconds: 3600, count: 20 },
+  emojiPack: null,
 };
 
 export interface GuessEntry {
@@ -214,6 +218,7 @@ export function getSettings(db: Database.Database, chatId: number): ChatSettings
     ...structuredClone(DEFAULT_SETTINGS),
     ...parsed,
     creativity: { ...structuredClone(DEFAULT_SETTINGS.creativity), ...(parsed.creativity ?? {}) },
+    emojiPack: isEmojiPackConfig(parsed.emojiPack) ? parsed.emojiPack : null,
   };
 }
 

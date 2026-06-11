@@ -1,5 +1,8 @@
 import { ChatSettings, Difficulty, StatsRow, TournamentRow } from '../db.js';
+import type { HardModeViolation } from '../engine/hardmode.js';
+import { scoreGuess, type TileStatus } from '../engine/score.js';
 import { roundOrder } from '../game/service.js';
+import { formatTileLetter, type EmojiPackConfig, type TileColor } from '../render/emoji-pack.js';
 
 export const HELP_TEXT = `🟩 Wordle Bot — How to Play
 
@@ -12,7 +15,7 @@ Guess it in 6 tries — everyone in the chat plays together!
 
 Commands
 /play — start a new game
-/guess WORD — submit a guess
+/guess WORD — submit a guess (/w works too)
 /board — show the current board
 /giveup — end the game and reveal the word
 /stats — your stats in this chat
@@ -27,6 +30,43 @@ export const DIFFICULTY_LABEL: Record<Difficulty, string> = {
   superhard: '🔥 super hard',
 };
 
+export const RENDER_LABEL: Record<ChatSettings['render'], string> = {
+  image: '🖼 image',
+  sticker: '🧩 sticker',
+  text: '🔤 text',
+};
+
+/** "Hard mode: you must use 🟩W 🟨A. You cannot use ⬛C" — tiles via the chat's emoji pack if set. */
+export function hardModeViolationText(
+  violation: HardModeViolation,
+  superHard: boolean,
+  emojiPack: EmojiPackConfig | null
+): string {
+  const mode = superHard ? '🔥 Super hard mode' : '😤 Hard mode';
+  const required = violation.required
+    .map((hint) => formatTileLetter(hint.letter, hint.color, emojiPack))
+    .join(' ');
+  const forbidden = violation.forbidden.map((letter) => formatTileLetter(letter, 'dark-gray', emojiPack)).join(' ');
+
+  if (required && forbidden) return `${mode}: you must use ${required}.\nYou cannot use ${forbidden}`;
+  if (required) return `${mode}: you must use ${required}`;
+  return `${mode}: you cannot use ${forbidden}`;
+}
+
+/** "♻️ 🟨T 🟨R 🟨A ⬛C 🟨E was already guessed" */
+export function alreadyGuessedText(word: string, answer: string, emojiPack: EmojiPackConfig | null): string {
+  const tiles = scoreGuess(answer, word)
+    .map((status, index) => formatTileLetter(word[index], tileStatusColor(status), emojiPack))
+    .join(' ');
+  return `♻️ ${tiles} was already guessed`;
+}
+
+function tileStatusColor(status: TileStatus): TileColor {
+  if (status === 'correct') return 'green';
+  if (status === 'present') return 'yellow';
+  return 'dark-gray';
+}
+
 export function describeCreativity(s: ChatSettings): string {
   if (!s.creativity.enabled) return 'off';
   return s.creativity.mode === 'time'
@@ -38,10 +78,11 @@ export function settingsText(s: ChatSettings): string {
   return `⚙️ Settings for this chat
 
 • Bare-word guessing: ${s.bareWord ? 'ON — any valid 5-letter word counts as a guess' : 'OFF — use /guess WORD'}
-• Board style: ${s.render === 'image' ? '🖼 image' : '🔤 text'}
+• Board style: ${RENDER_LABEL[s.render]}
 • Difficulty: ${DIFFICULTY_LABEL[s.difficulty]}
 • Creativity mode: ${describeCreativity(s)}
 • Max failed attempts (tournaments): ${s.maxFails > 0 ? `${s.maxFails} per turn` : 'unlimited'}
+• Emoji pack: ${s.emojiPack ? `${s.emojiPack.name} (/usepack off to remove)` : 'none — set with /usepack NAME'}
 
 Difficulty: hard = every green/yellow hint must be used in later guesses; super hard = additionally, gray letters may not be played again.
 
@@ -121,10 +162,11 @@ export function humanMs(ms: number): string {
 }
 
 export function standingsText(t: TournamentRow): string {
+  const rankLabels = ['🥇', '🥈', '🥉'];
   const rows = [...t.players]
     .map((p) => ({ p, pts: t.scores[String(p.userId)] ?? 0 }))
     .sort((a, b) => b.pts - a.pts)
-    .map((r, i) => `${i + 1}. ${r.p.userName} — ${r.pts} pts`);
+    .map((r, i) => `${rankLabels[i] ?? `${i + 1}.`} ${r.p.userName} — ${r.pts} pts`);
   return rows.join('\n');
 }
 

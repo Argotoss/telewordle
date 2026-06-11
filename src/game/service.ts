@@ -24,7 +24,7 @@ import {
   updateGame,
   updateTournament,
 } from '../db.js';
-import { hardModeViolation } from '../engine/hardmode.js';
+import { hardModeViolation, type HardModeViolation } from '../engine/hardmode.js';
 import { scoreGuess, TileStatus } from '../engine/score.js';
 import { isValidWord, pickAnswer } from '../engine/words.js';
 
@@ -57,7 +57,7 @@ export type GuessOutcome =
   | { type: 'no_game' }
   | { type: 'not_a_word'; word: string; failInfo?: FailInfo }
   | { type: 'creativity_blocked'; word: string; failInfo?: FailInfo }
-  | { type: 'hard_mode_violation'; word: string; reason: string; superHard: boolean; failInfo?: FailInfo }
+  | { type: 'hard_mode_violation'; word: string; violation: HardModeViolation; superHard: boolean; failInfo?: FailInfo }
   | { type: 'already_guessed'; word: string; failInfo?: FailInfo }
   | { type: 'not_your_turn'; currentPlayer: TournamentPlayer }
   | {
@@ -161,8 +161,8 @@ export class GameService {
     // hard / super hard mode: all revealed hints must be used
     if (settings.difficulty !== 'normal') {
       const superHard = settings.difficulty === 'superhard';
-      const reason = hardModeViolation(game.answer, game.guesses.map((g) => g.word), word, superHard);
-      if (reason) return fail({ type: 'hard_mode_violation', word, reason, superHard });
+      const violation = hardModeViolation(game.answer, game.guesses.map((g) => g.word), word, superHard);
+      if (violation) return fail({ type: 'hard_mode_violation', word, violation, superHard });
     }
 
     // accept the guess
@@ -213,6 +213,16 @@ export class GameService {
     if (t.status !== 'joining') return 'closed';
     if (t.players.some((p) => p.userId === user.id)) return 'already_in';
     t.players.push({ userId: user.id, userName: user.name });
+    updateTournament(this.db, t);
+    return getTournament(this.db, t.id);
+  }
+
+  quitTournament(tournamentId: number, userId: number): TournamentRow | 'closed' | 'not_in' | null {
+    const t = getTournament(this.db, tournamentId);
+    if (!t) return null;
+    if (t.status !== 'joining') return 'closed';
+    if (!t.players.some((p) => p.userId === userId)) return 'not_in';
+    t.players = t.players.filter((p) => p.userId !== userId);
     updateTournament(this.db, t);
     return getTournament(this.db, t.id);
   }

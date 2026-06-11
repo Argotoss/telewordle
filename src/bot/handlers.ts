@@ -2,11 +2,15 @@ import type Database from 'better-sqlite3';
 import { Bot, Context, InlineKeyboard, InputFile } from 'grammy';
 import { GameRow, TournamentRow } from '../db.js';
 import { GameService, MAX_GUESSES, UserRef, roundOrder } from '../game/service.js';
-import { renderBoardImage } from '../render/image.js';
+import { emojiPackFromStickers, escapeHtml, packNameCandidates } from '../render/emoji-pack.js';
+import { renderBoardImage, renderBoardSticker, renderKeyboardSticker } from '../render/image.js';
 import { textBoard } from '../render/text.js';
 import {
   DIFFICULTY_LABEL,
   HELP_TEXT,
+  RENDER_LABEL,
+  alreadyGuessedText,
+  hardModeViolationText,
   humanDuration,
   humanMs,
   parseCreativityValue,
@@ -27,7 +31,7 @@ function settingsKeyboard(svc: GameService, chatId: number): InlineKeyboard {
   return new InlineKeyboard()
     .text(`Bare-word guessing: ${s.bareWord ? 'ON ✅' : 'OFF'}`, 'set:bare')
     .row()
-    .text(`Board style: ${s.render === 'image' ? '🖼 image' : '🔤 text'}`, 'set:render')
+    .text(`Board style: ${RENDER_LABEL[s.render]}`, 'set:render')
     .row()
     .text(`Difficulty: ${DIFFICULTY_LABEL[s.difficulty]}`, 'set:difficulty')
     .row()
@@ -46,7 +50,11 @@ Tap Join to enter, then the creator taps Start.`;
 }
 
 function lobbyKeyboard(t: TournamentRow): InlineKeyboard {
-  return new InlineKeyboard().text('✋ Join', `t:join:${t.id}`).text('▶️ Start', `t:start:${t.id}`);
+  return new InlineKeyboard()
+    .text('✋ Join', `t:join:${t.id}`)
+    .text('▶️ Start', `t:start:${t.id}`)
+    .row()
+    .text('🚪 Quit', `t:quit:${t.id}`);
 }
 
 export function registerHandlers(bot: Bot, db: Database.Database): void {
@@ -57,6 +65,12 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     if (s.render === 'image') {
       const buf = renderBoardImage(game);
       await ctx.api.sendPhoto(chatId, new InputFile(buf, 'board.png'), { caption });
+    } else if (s.render === 'sticker') {
+      await ctx.api.sendSticker(chatId, new InputFile(renderBoardSticker(game), 'board.webp'));
+      if (game.status === 'active' && game.guesses.length > 0) {
+        await ctx.api.sendSticker(chatId, new InputFile(renderKeyboardSticker(game), 'keyboard.webp'));
+      }
+      if (caption) await ctx.api.sendMessage(chatId, caption);
     } else {
       await ctx.api.sendMessage(chatId, `${caption}\n\n${textBoard(game)}`);
     }
@@ -67,11 +81,16 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const user = userRef(ctx);
     const out = svc.submitGuess(chatId, user, word);
 
-    const withFails = (msg: string, failInfo?: { count: number; max: number; forfeited: boolean; nextPlayer: { userName: string } | null }) => {
+    const withFails = (
+      msg: string,
+      failInfo?: { count: number; max: number; forfeited: boolean; nextPlayer: { userName: string } | null },
+      html = false
+    ) => {
       if (!failInfo) return msg;
       msg += `\n(${failInfo.count}/${failInfo.max} failed attempts this turn)`;
       if (failInfo.forfeited && failInfo.nextPlayer) {
-        msg += `\n🚷 Turn forfeited! Next up: ${failInfo.nextPlayer.userName}`;
+        const name = html ? escapeHtml(failInfo.nextPlayer.userName) : failInfo.nextPlayer.userName;
+        msg += `\n🚷 Turn forfeited! Next up: ${name}`;
       }
       return msg;
     };
@@ -83,15 +102,24 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
       case 'not_a_word':
         await ctx.reply(withFails(`🤔 "${out.word.toUpperCase()}" is not in my dictionary.`, out.failInfo));
         return;
-      case 'already_guessed':
-        await ctx.reply(withFails(`♻️ ${out.word.toUpperCase()} was already guessed this game.`, out.failInfo));
+      case 'already_guessed': {
+        const game = svc.activeGame(chatId)!;
+        const pack = svc.settings(chatId).emojiPack;
+        await ctx.reply(withFails(alreadyGuessedText(out.word, game.answer, pack), out.failInfo, true), {
+          parse_mode: 'HTML',
+        });
         return;
+      }
       case 'creativity_blocked':
         await ctx.reply(withFails(`🚫 Creativity mode: ${out.word.toUpperCase()} was used recently here. Try something fresh!`, out.failInfo));
         return;
-      case 'hard_mode_violation':
-        await ctx.reply(withFails(`${out.superHard ? '🔥 Super hard' : '😤 Hard'} mode: ${out.reason}.`, out.failInfo));
+      case 'hard_mode_violation': {
+        const pack = svc.settings(chatId).emojiPack;
+        await ctx.reply(withFails(hardModeViolationText(out.violation, out.superHard, pack), out.failInfo, true), {
+          parse_mode: 'HTML',
+        });
         return;
+      }
       case 'not_your_turn':
         await ctx.reply(`⏳ Not so fast — it's ${out.currentPlayer.userName}'s turn.`);
         return;
@@ -187,12 +215,43 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     await sendBoard(ctx, chatId, game, `🎮 New game! I picked a 5-letter word — you have ${MAX_GUESSES} tries. ${hint}`);
   });
 
-  bot.command('guess', async (ctx) => {
+  bot.command(['guess', 'w'], async (ctx) => {
     const word = (ctx.match ?? '').trim();
     if (!/^[a-zA-Z]{5}$/.test(word)) {
-      return void (await ctx.reply('Usage: /guess WORD (a 5-letter word, e.g. /guess crane)'));
+      return void (await ctx.reply('Usage: /guess WORD or /w WORD (a 5-letter word, e.g. /w crane)'));
     }
     await handleGuess(ctx, word);
+  });
+
+  bot.command('usepack', async (ctx) => {
+    const requestedName = (ctx.match ?? '').trim();
+    if (!requestedName) {
+      return void (await ctx.reply('Usage: /usepack NAME — a custom emoji pack name or t.me/addemoji/... link.\n/usepack off removes the current pack.'));
+    }
+    if (requestedName.toLowerCase() === 'off') {
+      const s = svc.settings(ctx.chat.id);
+      s.emojiPack = null;
+      svc.saveSettings(ctx.chat.id, s);
+      return void (await ctx.reply('✅ Emoji pack removed — hint messages use plain emoji again.'));
+    }
+
+    let lastError: unknown = null;
+    for (const packName of packNameCandidates(requestedName, ctx.me.username)) {
+      try {
+        const stickerSet = await ctx.api.getStickerSet(packName);
+        if (stickerSet.sticker_type !== 'custom_emoji') {
+          return void (await ctx.reply(`${packName} is not a custom emoji pack.`));
+        }
+        const s = svc.settings(ctx.chat.id);
+        s.emojiPack = emojiPackFromStickers(packName, stickerSet.stickers);
+        svc.saveSettings(ctx.chat.id, s);
+        return void (await ctx.reply(`✅ Custom emoji pack enabled!\nPack: https://t.me/addemoji/${packName}`));
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    await ctx.reply(`Could not use that emoji pack: ${message}`);
   });
 
   bot.command('board', async (ctx) => {
@@ -309,7 +368,7 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     const s = svc.settings(chatId);
     const which = ctx.match[1];
     if (which === 'bare') s.bareWord = !s.bareWord;
-    if (which === 'render') s.render = s.render === 'image' ? 'text' : 'image';
+    if (which === 'render') s.render = s.render === 'image' ? 'sticker' : s.render === 'sticker' ? 'text' : 'image';
     if (which === 'creativity') s.creativity.enabled = !s.creativity.enabled;
     if (which === 'difficulty') {
       s.difficulty = s.difficulty === 'normal' ? 'hard' : s.difficulty === 'hard' ? 'superhard' : 'normal';
@@ -325,6 +384,14 @@ export function registerHandlers(bot: Bot, db: Database.Database): void {
     if (res === 'already_in') return void (await ctx.answerCallbackQuery('You are already in!'));
     await ctx.editMessageText(lobbyText(res), { reply_markup: lobbyKeyboard(res) });
     await ctx.answerCallbackQuery('Joined! 🏆');
+  });
+
+  bot.callbackQuery(/^t:quit:(\d+)$/, async (ctx) => {
+    const res = svc.quitTournament(parseInt(ctx.match[1], 10), ctx.from.id);
+    if (!res || res === 'closed') return void (await ctx.answerCallbackQuery('This tournament can no longer be left.'));
+    if (res === 'not_in') return void (await ctx.answerCallbackQuery('You are not in this tournament.'));
+    await ctx.editMessageText(lobbyText(res), { reply_markup: lobbyKeyboard(res) });
+    await ctx.answerCallbackQuery('You left the tournament.');
   });
 
   bot.callbackQuery(/^t:start:(\d+)$/, async (ctx) => {

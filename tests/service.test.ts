@@ -259,6 +259,21 @@ describe('tournaments', () => {
     expect(svc.submitGuess(CHAT, A, 'crane').type).toBe('accepted');
   });
 
+  it('players can quit a lobby before it starts', () => {
+    const t0 = svc.createTournament(CHAT, 2, A)!;
+    svc.joinTournament(t0.id, B);
+    svc.joinTournament(t0.id, C);
+
+    expect(svc.quitTournament(t0.id, B.id)).not.toBe('not_in');
+    expect(svc.quitTournament(t0.id, B.id)).toBe('not_in');
+    const t = svc.openTournament(CHAT)!;
+    expect(t.players.map((p) => p.userId)).toEqual([A.id, C.id]);
+
+    const started = svc.startTournament(t0.id);
+    expect(started).not.toBe('too_few'); // still 2 players left
+    expect(svc.quitTournament(t0.id, C.id)).toBe('closed'); // no quitting mid-game
+  });
+
   it('cancel: only the creator can', () => {
     const t = svc.createTournament(CHAT, 3, A)!;
     expect(svc.cancelTournament(CHAT, B.id)).toBe('not_allowed');

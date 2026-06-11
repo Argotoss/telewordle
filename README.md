@@ -19,20 +19,21 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
 | Command | What it does |
 |---|---|
 | `/play` | Start a new game (random word, 6 tries, shared board) |
-| `/guess WORD` | Submit a guess |
+| `/guess WORD` | Submit a guess (`/w WORD` works too) |
 | `/board` | Show the current board (and tournament standings) |
 | `/giveup` | Abandon the game and reveal the word |
 | `/stats` | Your stats in this chat |
 | `/tournament N` | Start an N-round turn-based tournament |
 | `/tournament cancel` | Cancel the open tournament (creator only) |
 | `/challenge` | Duel: same word for two players, fewest guesses wins |
+| `/usepack NAME` | Render hints with a custom emoji tile pack (`/usepack off` to remove) |
 | `/settings` | Per-chat settings (see below) |
 | `/help` | How to play |
 
 ## Settings (`/settings`, per chat)
 
 - **Bare-word guessing** (default **off**) — when on, any message that is a valid 5-letter word counts as a guess. Unknown words get a "not in my dictionary" notice.
-- **Board style** (default **image**) — classic Wordle picture (board + letter keyboard), or pure text:
+- **Board style** (default **image**) — classic Wordle picture (board + letter keyboard), big **sticker** output (512px WebP board + keyboard stickers), or pure text:
   ```
   T R A C E
   🟨🟨🟨⬛🟨
@@ -51,7 +52,7 @@ A Wordle bot for Telegram groups. Random 5-letter word, 6 tries, the whole chat 
 
 ## Tournaments
 
-`/tournament 3` opens a lobby (join via button, creator presses Start). Players guess strictly in turn order, and the order rotates every round so nobody is always first. Solving the word scores points by how early it fell: guess #1 = 6 pts … guess #6 = 1 pt. After the last round the bot posts the scoreboard and the winner.
+`/tournament 3` opens a lobby (join or quit via buttons, creator presses Start). Players guess strictly in turn order, and the order rotates every round so nobody is always first. Solving the word scores points by how early it fell: guess #1 = 6 pts … guess #6 = 1 pt. After the last round the bot posts the scoreboard and the winner.
 
 ## Duels
 
