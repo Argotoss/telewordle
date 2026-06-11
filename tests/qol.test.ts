@@ -80,9 +80,20 @@ describe('post-game analysis', () => {
     expect(rows[0].after).toBeLessThan(rows[0].before);
     expect(rows[0].after).toBeGreaterThan(0); // 'water' itself must survive the filter
     expect(rows[1].verdict).toBe('solved');
+    expect(rows[1].skill).toBeNull(); // no skill grade on the solving guess
+    expect(rows[0].skill).toBe('strong'); // CRANE is a top-tier opener
+    expect(rows[0].median).toBeGreaterThan(0);
     const text = breakdownText(game, rows);
     expect(text).toContain('🔬 Breakdown — WATER');
-    expect(text).toContain('CRANE');
+    expect(text).toContain('🧠 strong word');
+  });
+
+  it('flags weak word choices independently of luck', () => {
+    db.prepare('UPDATE games SET answer = ? WHERE id = ?').run('abbey', svc.startGame(CHAT)!.id);
+    svc.submitGuess(CHAT, A, 'mamma'); // dreadful opener: duplicate letters, rare ones
+    svc.submitGuess(CHAT, A, 'abbey');
+    const rows = analyzeGame(recentFinishedGames(db, CHAT, 1)[0]);
+    expect(rows[0].skill).toBe('weak');
   });
 });
 

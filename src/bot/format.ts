@@ -261,22 +261,26 @@ export function vsText(
   return lines.join('\n');
 }
 
-const VERDICT_LABEL: Record<GuessAnalysis['verdict'], string> = {
-  solved: '🏁 solved it!',
-  lucky: '🍀 lucky',
-  solid: '🎯 solid',
-  unlucky: '😬 unlucky',
+const SKILL_LABEL: Record<NonNullable<GuessAnalysis['skill']>, string> = {
+  strong: '🧠 strong word',
+  fine: '👍 fine word',
+  weak: '💤 weak word',
 };
 
-/** Post-game per-guess breakdown: how each guess narrowed the candidate pool. */
+/**
+ * Post-game per-guess breakdown. Two separate axes:
+ * word quality (vs alternative guesses) and luck (vs the typical outcome).
+ */
 export function breakdownText(game: GameRow, rows: GuessAnalysis[]): string {
   const fmt = (n: number) => n.toLocaleString('en-US');
   const lines = rows.map((r, i) => {
     const head = `${ROW_NUM[i]} ${r.word.toUpperCase()} · ${r.userName}`;
-    if (r.verdict === 'solved') return `${head} — ${VERDICT_LABEL.solved}`;
-    const expectation =
-      r.verdict === 'lucky' || r.verdict === 'unlucky' ? ` (expected ~${Math.max(1, Math.round(r.expected))})` : '';
-    return `${head} — ${fmt(r.before)} → ${fmt(r.after)} left · ${VERDICT_LABEL[r.verdict]}${expectation}`;
+    if (r.verdict === 'solved') return `${head} — 🏁 solved it!`;
+    const parts = [`${fmt(r.before)} → ${fmt(r.after)} left`];
+    if (r.skill) parts.push(SKILL_LABEL[r.skill]);
+    if (r.verdict === 'lucky') parts.push(`🍀 lucky (typical ~${Math.max(1, r.median)})`);
+    if (r.verdict === 'unlucky') parts.push(`😬 unlucky (typical ~${Math.max(1, r.median)})`);
+    return `${head} — ${parts.join(' · ')}`;
   });
   return `🔬 Breakdown — ${game.answer.toUpperCase()}\n\n${lines.join('\n')}`;
 }
